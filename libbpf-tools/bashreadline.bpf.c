@@ -1,38 +1,61 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-/* Copyright (c) 2021 Facebook */
 #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include "bashreadline.h"
 
-#define TASK_COMM_LEN 16
+char LICENSE[] SEC("license") = "GPL";
+
+// int SSL_write_ex(SSL *s, const void *buf, size_t num, size_t *written);
+#define NUM 1000
+
+#define MIN(a,b) (((a)<(b))?(a):(b))
+
+static char array[NUM] ={0};
+
 
 struct {
-	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
-	__uint(key_size, sizeof(__u32));
-	__uint(value_size, sizeof(__u32));
+	__uint(type, BPF_MAP_TYPE_QUEUE);
+	/* function call stack for functions we are tracing */
+	__uint(max_entries, 100);
+	// __type(key, __u64);
+	// __type(value, struct func_stack);
+	__uint(value_size, sizeof(array));
+	__uint(key_size, 0);
+	// .flags = BPF_F_QUEUE_FIFO, // https://patchwork.ozlabs.org/project/netdev/patch/153356392410.6981.1290059578982921349.stgit@kernel/#1969518
 } events SEC(".maps");
 
-SEC("uretprobe/readline")
-int BPF_KRETPROBE(printret, const void *ret) {
-	struct str_t data;
-	char comm[TASK_COMM_LEN];
-	u32 pid;
+// struct {
+// 	__uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+// 	// __type(value, struct func_stack);
 
-	if (!ret)
-		return 0;
+// 	__uint(value_size, sizeof(array));
+// 	__uint(key_size, sizeof(int));
+// } events SEC(".maps");
 
-	bpf_get_current_comm(&comm, sizeof(comm));
-	if (comm[0] != 'b' || comm[1] != 'a' || comm[2] != 's' || comm[3] != 'h' || comm[4] != 0 )
-		return 0;
 
-	pid = bpf_get_current_pid_tgid() >> 32;
-	data.pid = pid;
-	bpf_probe_read_user_str(&data.str, sizeof(data.str), ret);
+SEC("uprobe/foo")
+int BPF_KPROBE(printret, void *ss, void *buf, size_t num) // size_t *written
+{
+	//       long bpf_probe_read_user(void *dst, u32 size, const void
+    //    *unsafe_ptr)
 
-	bpf_perf_event_output(ctx, &events, BPF_F_CURRENT_CPU, &data, sizeof(data));
+    //           Description
+    //                  Safely attempt to read size bytes from user space
+    //                  address unsafe_ptr and store the data in dst.
 
-	return 0;
-};
+	int real_num = MIN(NUM, num - 1);
+	bpf_probe_read_user(array, real_num, buf);
 
-char LICENSE[] SEC("license") = "GPL";
+	const u32 tid = bpf_get_current_pid_tgid();
+	bpf_map_push_elem(&events, &array, BPF_EXIST);
+	
+    bpf_printk("GOT %d\n", num);
+    return 0;
+}
+
+// SEC("uprobe/SSL_read_ex")
+// int BPF_URETPROBE(printret2, char* ret)
+// {
+//     bpf_printk("bbb %s\n", ret);
+//     return 0;
+// }

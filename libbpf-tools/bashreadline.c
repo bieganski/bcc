@@ -73,16 +73,7 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 static void handle_event(void *ctx, int cpu, void *data, __u32 data_size)
 {
-	struct str_t *e = data;
-	struct tm *tm;
-	char ts[16];
-	time_t t;
-
-	time(&t);
-	tm = localtime(&t);
-	strftime(ts, sizeof(ts), "%H:%m:%S", tm);
-
-	printf("%-9s %-7d %s\n", ts, e->pid, e->str);
+	printf("USERSPACE %s\n", data);
 }
 
 static void handle_lost_events(void *ctx, int cpu, __u64 lost_cnt)
@@ -127,6 +118,7 @@ static char *find_readline_function_name(const char *bash_path)
 
 static char *find_readline_so()
 {
+	return strdup("/lib/x86_64-linux-gnu/libssl.so.3");
 	const char *bash_path = "/bin/bash";
 	FILE *fp;
 	off_t func_off;
@@ -177,6 +169,11 @@ static void sig_int(int signo)
 	exiting = 1;
 }
 
+#include <fcntl.h>
+#include <unistd.h>
+
+
+
 int main(int argc, char **argv)
 {
 	LIBBPF_OPTS(bpf_object_open_opts, open_opts);
@@ -221,13 +218,15 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	func_off = get_elf_func_offset(readline_so_path, find_readline_function_name(readline_so_path));
+	func_off = get_elf_func_offset(readline_so_path, "SSL_read");
 	if (func_off < 0) {
 		warn("cound not find readline in %s\n", readline_so_path);
 		goto cleanup;
 	}
 
-	obj->links.printret = bpf_program__attach_uprobe(obj->progs.printret, true, -1,
+	bool is_not_retprobe = false;
+	int any_pid = -1;
+	obj->links.printret = bpf_program__attach_uprobe(obj->progs.printret, is_not_retprobe, any_pid,
 							 readline_so_path, func_off);
 	if (!obj->links.printret) {
 		err = -errno;
@@ -235,29 +234,57 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	pb = perf_buffer__new(bpf_map__fd(obj->maps.events), PERF_BUFFER_PAGES,
-			      handle_event, handle_lost_events, NULL, NULL);
-	if (!pb) {
-		err = -errno;
-		warn("failed to open perf buffer: %d\n", err);
-		goto cleanup;
-	}
+	printf("started!\n");
 
-	if (signal(SIGINT, sig_int) == SIG_ERR) {
-		warn("can't set signal handler: %s\n", strerror(errno));
-		err = 1;
-		goto cleanup;
-	}
+	while (1) {
+		static char array[1000];
+		int res = bpf_map_lookup_and_delete_elem(bpf_map__fd(obj->maps.events), NULL, array);
+		if (res >= 0) {
+			printf("GOT IT! %.1000s\n\n", array);
 
-	printf("%-9s %-7s %s\n", "TIME", "PID", "COMMAND");
-	while (!exiting) {
-		err = perf_buffer__poll(pb, PERF_POLL_TIMEOUT_MS);
-		if (err < 0 && err != -EINTR) {
-			warn("error polling perf buffer: %s\n", strerror(-err));
-			goto cleanup;
+			const char *filePath = "/home/m.bieganski/example.txt";
+
+			// Open the file in write-only mode, create if it doesn't exist, and truncate to zero length
+			int fd = open(filePath, O_WRONLY | O_CREAT | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+
+			if (fd == -1) {
+				perror("Error opening file");
+				return 1; // Exit with an error code
+			}
+
+			// Write the data to the file
+			size_t dataSize = sizeof(array);
+			ssize_t bytesWritten = write(fd, array, sizeof(array));
+
+
 		}
-		err = 0;
+		usleep(1000);
+		// printf("nothing\n");
 	}
+
+	// pb = perf_buffer__new(bpf_map__fd(obj->maps.events), PERF_BUFFER_PAGES,
+	// 		      handle_event, handle_lost_events, NULL, NULL);
+	// if (!pb) {
+	// 	err = -errno;
+	// 	warn("failed to open perf buffer: %d\n", err);
+	// 	goto cleanup;
+	// }
+
+	// if (signal(SIGINT, sig_int) == SIG_ERR) {
+	// 	warn("can't set signal handler: %s\n", strerror(errno));
+	// 	err = 1;
+	// 	goto cleanup;
+	// }
+
+	// printf("%-9s %-7s %s\n", "TIME", "PID", "COMMAND");
+	// while (!exiting) {
+	// 	err = perf_buffer__poll(pb, PERF_POLL_TIMEOUT_MS);
+	// 	if (err < 0 && err != -EINTR) {
+	// 		warn("error polling perf buffer: %s\n", strerror(-err));
+	// 		goto cleanup;
+	// 	}
+	// 	err = 0;
+	// }
 
 cleanup:
 	if (readline_so_path)
