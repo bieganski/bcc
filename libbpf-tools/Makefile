@@ -28,13 +28,14 @@ USE_BLAZESYM ?= 1
 endif
 endif
 
+USE_BLAZESYM := 0
+
 ifeq ($(wildcard $(ARCH)/),)
 $(error Architecture $(ARCH) is not supported yet. Please open an issue)
 endif
 
 BZ_APPS = \
 	futexctn \
-	memleak \
 	opensnoop \
 	#
 
@@ -62,13 +63,11 @@ APPS = \
 	gethostlatency \
 	hardirqs \
 	javagc \
-	klockstat \
 	ksnoop \
 	llcstat \
 	mdflush \
 	mountsnoop \
 	numamove \
-	offcputime \
 	oomkill \
 	profile \
 	readahead \
@@ -81,15 +80,11 @@ APPS = \
 	solisten \
 	statsnoop \
 	syscount \
-	tcptracer \
 	tcpconnect \
 	tcpconnlat \
-	tcplife \
 	tcppktlat \
 	tcprtt \
-	tcpstates \
 	tcpsynbl \
-	tcptop \
 	vfsstat \
 	wakeuptime \
 	$(BZ_APPS) \
@@ -178,7 +173,7 @@ $(OUTPUT) $(OUTPUT)/libbpf $(BPFTOOL_OUTPUT):
 
 $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 	$(call msg,BPFTOOL,$@)
-	$(Q)$(MAKE) ARCH= CROSS_COMPILE=  OUTPUT=$(BPFTOOL_OUTPUT)/ -C $(BPFTOOL_SRC) bootstrap
+	$(Q)$(MAKE) ARCH= CROSS_COMPILE= EXTRA_CFLAGS= EXTRA_LDFLAGS=  OUTPUT=$(BPFTOOL_OUTPUT)/ -C $(BPFTOOL_SRC) bootstrap
 
 $(APPS): %: $(OUTPUT)/%.o $(COMMON_OBJ) $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
