@@ -40,6 +40,7 @@ BZ_APPS = \
 	#
 
 APPS = \
+	uprobe \
 	bashreadline \
 	bindsnoop \
 	biolatency \

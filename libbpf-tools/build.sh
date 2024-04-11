@@ -64,6 +64,7 @@ cp /usr/include/zconf.h $LIBS_DIR
 
 if [ "$ARCH" == "riscv64" ]; then
 compiler=riscv64-linux-gnu-g
+ARCH_TRANSLATED=riscv
 ARCH_FLAGS=
 else
 compiler=arm-linux-gnueabi-g
@@ -71,8 +72,11 @@ compiler=arm-linux-gnueabi-g
 # ARCH_FLAGS="-mcpu=cortex-a72 -mfloat-abi=soft -mfpu=neon-fp-armv8"
 # ARCH_FLAGS below come from native gcc on RPI-4.
 ARCH_FLAGS="-mfloat-abi=softfp -mtune=cortex-a8 -mtls-dialect=gnu -marm -march=armv7-a"
+ARCH_TRANSLATED=arm
 fi
 
 STATIC= # STATIC="-static -static-libgcc -static-libstdc++"
 
-EXTRA_CFLAGS="$ARCH_FLAGS " EXTRA_LDFLAGS=" $STATIC -L$LIBS_DIR  -Wl,--export-dynamic,--dynamic-linker=/lib/ld-linux-riscv64-lp64d.so.1" CROSS_COMPILE=$compiler make  # -j12 # --debug=b
+
+
+EXTRA_CFLAGS="$ARCH_FLAGS " EXTRA_LDFLAGS=" $STATIC -L$LIBS_DIR  -Wl,--export-dynamic,--dynamic-linker=/lib/ld-linux-riscv64-lp64d.so.1" CROSS_COMPILE=$compiler ARCH=$ARCH_TRANSLATED make  # -j12 # --debug=b
