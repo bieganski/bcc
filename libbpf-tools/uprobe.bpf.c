@@ -7,37 +7,17 @@
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
-SEC("uprobe")
-int BPF_KPROBE(uprobe_add, int a, int b)
-{
-	bpf_printk("uprobed_add ENTRY: a = %d, b = %d", a, b);
-	return 0;
-}
-
-SEC("uretprobe")
-int BPF_KRETPROBE(uretprobe_add, int ret)
-{
-	bpf_printk("uprobed_add EXIT: return = %d", ret);
-	return 0;
-}
-
-SEC("uprobe//proc/self/exe:uprobed_sub")
-int BPF_KPROBE(uprobe_sub, int a, int b)
-{
-	bpf_printk("uprobed_sub ENTRY: a = %d, b = %d", a, b);
-	return 0;
-}
-
 // SEC("uprobe//lib/x86_64-linux-gnu/libc.so.6:write")
-// int BPF_KPROBE(xdddwrite, int fd, void* buf, int num)
-// {
-// 	bpf_printk("WRITE %d\n", fd);
-// 	return 0;
-// }
-
-SEC("uretprobe//proc/self/exe:uprobed_sub")
-int BPF_KRETPROBE(uretprobe_sub, int ret)
+SEC("uprobe//")
+int BPF_KPROBE(xdddwrite, long long arg1, long long arg2, long long arg3, long long arg4, long long arg5, long long arg6)
 {
-	bpf_printk("uprobed_sub EXIT: return = %d", ret);
+	// static int divider = 0;
+
+	// if (++divider & 0xf00)
+	// 	bpf_printk("WRITE %d\n", fd);
+
+	int pid = bpf_get_current_pid_tgid() >> 32;
+
+	bpf_printk("generic uprobe hit from PID %d. args: %llx,%llx,%llx,%llx,%llx,%llx", pid, arg1, arg2, arg3, arg4, arg5, arg6);
 	return 0;
 }
