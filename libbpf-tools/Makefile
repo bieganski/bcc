@@ -39,6 +39,8 @@ BZ_APPS = \
 	opensnoop \
 	#
 
+# sockdump \
+
 APPS = \
 	uprobe \
 	bashreadline \

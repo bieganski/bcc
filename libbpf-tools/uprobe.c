@@ -7,6 +7,8 @@
 #include <bpf/libbpf.h>
 #include "uprobe.skel.h"
 
+#include <assert.h>
+
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	return vfprintf(stderr, format, args);
@@ -14,60 +16,35 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 int main(int argc, char **argv)
 {
-
-	if(argc != 3) {
-        printf("usage: %s <path to ELF> <symbol name>\n", argv[0]);
-        return 1;
-    }
-
-	char* symbol_name = argv[2];
-	char* elf_path = realpath(argv[1], NULL);
-	if (elf_path == NULL) {
-		perror("elf_path realpath");
+	struct uprobe_bpf *obj = uprobe_bpf__open();
+	if (!obj) {
+		perror("uprobe_bpf__open");
 		exit(1);
 	}
 
-	struct uprobe_bpf *skel;
-	LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
+	obj->rodata->is_bpf_jiffies64_supported = 0;
 
-	/* Set up libbpf errors and debug info callback */
-	libbpf_set_print(libbpf_print_fn);
-
-	/* Load and verify BPF application */
-	skel = uprobe_bpf__open_and_load();
-	if (!skel) {
-		perror("Failed to open and load BPF skeleton");
-		goto cleanup;
+	int err = uprobe_bpf__load(obj);
+	if (err) {
+		uprobe_bpf__destroy(obj);
+		perror("uprobe_bpf__load");
+		exit(1);
 	}
 
-	uprobe_opts.func_name = symbol_name;
-	uprobe_opts.retprobe = false;
-	int all_pid = -1, self_pid = 0;
-	
-	int arg_pid = all_pid;
-	int arg_offset = 0; // TODO not implemented
-	skel->links.xdddwrite = bpf_program__attach_uprobe_opts(
-		skel->progs.xdddwrite,
-		arg_pid,
-		elf_path,
-		arg_offset,
-		&uprobe_opts
-	);
-	if (!skel->links.xdddwrite) {
-		perror("Failed to attach uprobe");
-		goto cleanup;
+	assert(obj->links.probe_unix_socket_sendmsg == NULL);
+
+	err = uprobe_bpf__attach(obj);
+	if (err) {
+		perror("uprobe_bpf__attach");
+		exit(1);
 	}
+
+	// obj->links.probe_unix_socket_sendmsg = bpf_program__attach_kprobe(obj->progs.probe_unix_socket_sendmsg, false, "unix_stream_sendmsg");
 
 	printf("\nSuccessfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` "
               "to see output of the BPF programs.\n");
 
-
 	while(1) {
 		sleep(1);
 	}
-
-cleanup:
-	uprobe_bpf__destroy(skel);
-	free(elf_path);
-	return -1;
 }

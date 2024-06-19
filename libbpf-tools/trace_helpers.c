@@ -1056,6 +1056,7 @@ static bool fentry_try_attach(int id)
 
 bool fentry_can_attach(const char *name, const char *mod)
 {
+	printf("fentry_can_attach: %s %s\n", name, mod);
 	struct btf *btf, *vmlinux_btf, *module_btf = NULL;
 	int err, id;
 
@@ -1077,6 +1078,7 @@ bool fentry_can_attach(const char *name, const char *mod)
 
 	btf__free(module_btf);
 	btf__free(vmlinux_btf);
+	printf(" = %d\n", id > 0 && fentry_try_attach(id));
 	return id > 0 && fentry_try_attach(id);
 }
 
