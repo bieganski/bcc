@@ -83,18 +83,25 @@ struct packet {
 
 #define __NUM_CPUS__ 20
 
+struct {
+ __uint(type, BPF_MAP_TYPE_ARRAY);
+ __uint(max_entries, __NUM_CPUS__);
+ __type(key, int);
+ __type(value, struct packet);
+} heap /* packet_array */ SEC(".maps");
+
+// BPF_ARRAY(packet_array, struct packet, __NUM_CPUS__);
+
 // struct {
-//  __uint(type, BPF_MAP_TYPE_ARRAY);
-//  __uint(max_entries, __NUM_CPUS__);
-//  __type(key, int);
-//  __type(value, struct packet);
+//  __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+//  __uint(value_size, 4);
+//  __uint(key_size, 4);
 // } events SEC(".maps");
 
 struct {
- __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
- __uint(value_size, 4);
- __uint(key_size, 4);
-} events SEC(".maps");
+    __uint(type, BPF_MAP_TYPE_RINGBUF);
+    __uint(max_entries, 256 * 1024 /* 256 KB */);
+} rb SEC(".maps");
 
 
 // BPF_PERF_OUTPUT(events);
@@ -171,15 +178,21 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
     if (match == 0)
         return 0;
 
-    n = bpf_get_smp_processor_id();
+    // n = bpf_get_smp_processor_id();
     // mateusz: packet = packet_array.lookup(&n);
-	packet = bpf_perf_event_read_value(&events, BPF_F_CURRENT_CPU, packet, sizeof(packet));
+
+    packet = bpf_ringbuf_reserve(&rb, sizeof(*packet), 0);
+    // TODO tu jestem
+    if (!packet) {
+        bpf_printk("ERROR: !packet");
+        return 0;
+    }
 
     if (packet == NULL)
         return 0;
 
     packet->pid = bpf_get_current_pid_tgid() >> 32;
-    bpf_get_current_comm(&packet->comm, sizeof(packet->comm));
+        bpf_get_current_comm(&packet->comm, sizeof(packet->comm));
     bpf_probe_read(&packet->path, UNIX_PATH_MAX, sock_path);
     // packet->peer_pid = sock->sk->sk_peer_pid->numbers->nr;
     struct upid numbers = *BPF_CORE_READ(sock, sk, sk_peer_pid, numbers);
@@ -221,9 +234,12 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
 #else
     if (BPF_CORE_READ(iter, iov_offset) != 0) {
 #endif
+
         packet->len = len;
         packet->flags = SS_PACKET_F_ERR;
         // events.perf_submit(ctx, packet, offsetof(struct packet, data));
+
+        
 
 		bpf_perf_event_output(ctx, &events,
 				BPF_F_CURRENT_CPU,
