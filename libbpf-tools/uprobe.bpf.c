@@ -261,11 +261,17 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
 
         buf = iov_base;
         n = iov_len;
-        bpf_probe_read(
+        int ret = bpf_probe_read(
             &packet->data,
             // check size in args to make compiler/validator happy
             n > sizeof(packet->data) ? sizeof(packet->data) : n,
             buf);
+        if (ret < 0) {
+            for(int i = 0; i < 10; i++) {
+                packet->data[i] = 'B';
+            }
+            packet->data[10] = 0x0;
+        }
 
         n += offsetof(struct packet, data);
         // events.perf_submit(

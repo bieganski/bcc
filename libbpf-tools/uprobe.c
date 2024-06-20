@@ -8,6 +8,8 @@
 #include "uprobe.skel.h"
 
 #include <assert.h>
+#include <time.h>
+#include <signal.h>
 
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
@@ -38,7 +40,13 @@ struct packet {
     char path[UNIX_PATH_MAX];
 };
 
-#include <time.h>
+void print_readable_characters(const char *array, size_t size) {
+    for (size_t i = 0; i < size; ++i) {
+        if (array[i] >= 32 && array[i] <= 126) {
+            printf("%c", array[i]);
+        }
+    }
+}
 
 // typedef int (*ring_buffer_sample_fn)(void *ctx, void *data, size_t size);
 int handle_event(void *ctx, void *data, size_t data_sz)
@@ -52,7 +60,21 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
 
-	printf("%-8s %-5s %-7d %-16s %s %s\n", ts, "PIPE", packet->pid, packet->comm, packet->data, packet->path);
+	printf("%-8s %-5s [%-7d -> %-7d] %-16s %s", ts, "PIPE", packet->pid, packet->peer_pid, packet->comm, packet->path);
+
+	if (strlen(packet->data) == packet->len) {
+		printf("%s", packet->data);
+	} else {
+		print_readable_characters(packet->data, packet->len);
+		// for (int i = 0; i < packet->len; i++) {
+		// 	if (i % 8 == 0) {
+		// 		printf("\n	");
+		// 	}
+		// 	printf("0x%x ", (unsigned char) packet->data[i]);
+		// }
+		// printf("\n");
+	}
+	printf("\n");
 	return 0;
 }
 
@@ -75,8 +97,6 @@ static void sig_handler(int sig)
 {
 	exiting = true;
 }
-
-#include <signal.h>
 
 int main(int argc, char **argv)
 {
