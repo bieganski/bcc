@@ -83,12 +83,12 @@ struct packet {
 
 #define __NUM_CPUS__ 20
 
-struct {
- __uint(type, BPF_MAP_TYPE_ARRAY);
- __uint(max_entries, __NUM_CPUS__);
- __type(key, int);
- __type(value, struct packet);
-} heap /* packet_array */ SEC(".maps");
+// struct {
+//  __uint(type, BPF_MAP_TYPE_ARRAY);
+//  __uint(max_entries, __NUM_CPUS__);
+//  __type(key, int);
+//  __type(value, struct packet);
+// } heap /* packet_array */ SEC(".maps");
 
 // BPF_ARRAY(packet_array, struct packet, __NUM_CPUS__);
 
@@ -182,14 +182,10 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
     // mateusz: packet = packet_array.lookup(&n);
 
     packet = bpf_ringbuf_reserve(&rb, sizeof(*packet), 0);
-    // TODO tu jestem
     if (!packet) {
         bpf_printk("ERROR: !packet");
         return 0;
     }
-
-    if (packet == NULL)
-        return 0;
 
     packet->pid = bpf_get_current_pid_tgid() >> 32;
         bpf_get_current_comm(&packet->comm, sizeof(packet->comm));
@@ -240,32 +236,35 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
         // events.perf_submit(ctx, packet, offsetof(struct packet, data));
 
         
-
-		bpf_perf_event_output(ctx, &events,
-				BPF_F_CURRENT_CPU,
-				packet, offsetof(struct packet, data));
-
-        return 0;
+        bpf_ringbuf_output(&rb, packet, sizeof(*packet), 0);
+		// bpf_perf_event_output(ctx, &events,
+		// 		BPF_F_CURRENT_CPU,
+		// 		packet, offsetof(struct packet, data));
+        goto end;
     }
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,3,0)
+#error not yet there
     iov = iter->__iov;
 #elif LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
     iov = iter->iov;
+#error not yet there
 #else
-    iov = iter->kvec;
+    iov = BPF_CORE_READ(iter, kvec);
 #endif
 
     #pragma unroll
     for (int i = 0; i < SS_MAX_SEGS_PER_MSG; i++) {
-        if (i >= iter->nr_segs)
+        if (i >= BPF_CORE_READ(iter, nr_segs))
             break;
 
-        packet->len = iov->iov_len;
+        size_t iov_len = BPF_CORE_READ(iov, iov_len);
+        void* iov_base = BPF_CORE_READ(iov, iov_base);
+        packet->len = iov_len;
         packet->flags = 0;
 
-        buf = iov->iov_base;
-        n = iov->iov_len;
+        buf = iov_base;
+        n = iov_len;
         bpf_probe_read(
             &packet->data,
             // check size in args to make compiler/validator happy
@@ -279,13 +278,15 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
         //     // check size in args to make compiler/validator happy
         //     n > sizeof(*packet) ? sizeof(*packet) : n);
 
-		bpf_perf_event_output(ctx, &events,
-				BPF_F_CURRENT_CPU,
-				packet, n > sizeof(*packet) ? sizeof(*packet) : n);
+        bpf_ringbuf_output(&rb, packet, sizeof(*packet), 0);
+		// bpf_perf_event_output(ctx, &events,
+		// 		BPF_F_CURRENT_CPU,
+		// 		packet, n > sizeof(*packet) ? sizeof(*packet) : n);
 				
 
         iov++;
     }
-
+end:
+    bpf_ringbuf_discard(packet,0);
     return 0;
 }
