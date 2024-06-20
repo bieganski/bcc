@@ -59,17 +59,15 @@ char _license[] SEC("license") = "Dual BSD/GPL";
 #define SOCK_PATH_OFFSET    \
     (offsetof(struct unix_address, name) + offsetof(struct sockaddr_un, sun_path))
 
-#define u32 unsigned long
-#define size_t int
 
 struct packet {
-    u32 pid;
-    u32 peer_pid;
-    u32 len;
-    u32 flags;
+    __u32 pid;
+    __u32 peer_pid;
+    __u32 len;
+    __u32 flags;
+    char data[SS_MAX_SEG_SIZE];
     char comm[TASK_COMM_LEN];
     char path[UNIX_PATH_MAX];
-    char data[SS_MAX_SEG_SIZE];
 };
 
 // TODO unknown
@@ -124,15 +122,13 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
     struct unix_address *addr;
     char *buf, *sock_path;
     unsigned long path[__PATH_LEN_U64__] = {0};
-    unsigned int n, match = 0, offset;
+    unsigned int n, match = 0;
     struct iov_iter *iter;
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
     const struct iovec *iov;
 #else
     const struct kvec *iov;
 #endif
-    struct pid *peer_pid;
-
     // addr = ((struct unix_sock *)sock->sk)->addr;
 
     struct unix_sock *sk = (struct unix_sock *) BPF_CORE_READ(sock, sk);
