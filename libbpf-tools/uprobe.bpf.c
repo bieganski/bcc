@@ -114,6 +114,8 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
     struct msghdr *msg,
     size_t len)
 {
+    bpf_printk("in loop: hello!");
+
 
     // bpf_printk("AAA");
     // return (int) BPF_CORE_READ(sock, sk);
@@ -193,6 +195,7 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
     // mateusz __PID_FILTER__
 
     iter = &msg->msg_iter;
+    
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
 #error not yet ported
     if (iter->iter_type == ITER_UBUF) {
@@ -227,6 +230,8 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
     if (BPF_CORE_READ(iter, iov_offset) != 0) {
 #endif
 
+        bpf_printk("in loop: nonzero offset!");
+
         packet->len = len;
         packet->flags = SS_PACKET_F_ERR;
         // events.perf_submit(ctx, packet, offsetof(struct packet, data));
@@ -258,6 +263,7 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
         void* iov_base = BPF_CORE_READ(iov, iov_base);
         packet->len = iov_len;
         packet->flags = 0;
+        bpf_printk("in loop!");
 
         buf = iov_base;
         n = iov_len;

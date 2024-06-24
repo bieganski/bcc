@@ -40,6 +40,8 @@ struct packet {
     char path[UNIX_PATH_MAX];
 };
 
+#include <fcntl.h>
+
 void print_readable_characters(const char *array, size_t size) {
     for (size_t i = 0; i < size; ++i) {
         if (array[i] >= 32 && array[i] <= 126) {
@@ -56,15 +58,34 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	char ts[32];
 	time_t t;
 
+	char peer_comm[32] = "<unknown>";
+	char filepath[256] = {0};
+	snprintf(filepath, 256, "/proc/%d/comm", packet->peer_pid);
+	int fd = open(filepath, O_RDONLY);
+	int read_res = read(fd, peer_comm, 32);
+	if (read_res > 0) {
+		for(int i = 0; i < strlen(peer_comm); i++) {
+			if (peer_comm[i] == 10)
+				peer_comm[i] = 0;
+		}
+		// peer_comm[strlen(peer_comm) - 1] = '\0'; // strip newline
+	}
+	close(fd);
+
+	if (packet->flags == SS_PACKET_F_ERR) {
+		printf("PIPE ERROR !!!\n");
+		return 0;
+	}
+
 	time(&t);
 	tm = localtime(&t);
 	strftime(ts, sizeof(ts), "%H:%M:%S", tm);
-
-	printf("%-8s %-5s [%-7d -> %-7d] %-16s %s", ts, "PIPE", packet->pid, packet->peer_pid, packet->comm, packet->path);
+	printf("%-8s %s [%d -> %d] [%s -> %s] %s", ts, "PIPE", packet->pid, packet->peer_pid, packet->comm, peer_comm, packet->path);
 
 	if (strlen(packet->data) == packet->len) {
-		printf("%s", packet->data);
+		printf(" data_strlen %d ==: %s", packet->len, packet->data);
 	} else {
+		printf(" data_strlen %d != ", packet->len);
 		print_readable_characters(packet->data, packet->len);
 		// for (int i = 0; i < packet->len; i++) {
 		// 	if (i % 8 == 0) {
