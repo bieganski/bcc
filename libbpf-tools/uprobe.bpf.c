@@ -23,7 +23,9 @@
 // }
 
 
-#include <vmlinux.h>
+#include "vmlinux.h"
+
+// #include <vmlinux.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 #include <bpf/bpf_core_read.h>
@@ -114,7 +116,8 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
     struct msghdr *msg,
     size_t len)
 {
-    bpf_printk("in loop: hello!");
+    bpf_printk("in loop: hello!\n");
+    return 0;
 
 
     // bpf_printk("AAA");
@@ -129,7 +132,8 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6,0,0)
     const struct iovec *iov;
 #else
-    const struct kvec *iov;
+    const struct kvec *iov; // TAK BYLO
+    // const struct iovec *iov;
 #endif
     // addr = ((struct unix_sock *)sock->sk)->addr;
 
@@ -189,8 +193,8 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
         bpf_get_current_comm(&packet->comm, sizeof(packet->comm));
     bpf_probe_read(&packet->path, UNIX_PATH_MAX, sock_path);
     // packet->peer_pid = sock->sk->sk_peer_pid->numbers->nr;
-    struct upid numbers = *BPF_CORE_READ(sock, sk, sk_peer_pid, numbers);
-    packet->peer_pid = numbers.nr;
+    // struct upid numbers = *BPF_CORE_READ(sock, sk, sk_peer_pid, numbers);
+    packet->peer_pid = 1; // numbers.nr;
 
     // mateusz __PID_FILTER__
 
@@ -251,7 +255,8 @@ int BPF_KPROBE(probe_unix_socket_sendmsg,
     iov = iter->iov;
 #error not yet there
 #else
-    iov = BPF_CORE_READ(iter, kvec);
+    iov = BPF_CORE_READ(iter, kvec); // TAK BYLO
+    // iov = BPF_CORE_READ(iter, __iov);
 #endif
 
     #pragma unroll
