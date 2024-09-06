@@ -178,7 +178,7 @@ $(BPFTOOL): | $(BPFTOOL_OUTPUT)
 
 $(APPS): %: $(OUTPUT)/%.o $(COMMON_OBJ) $(LIBBPF_OBJ) | $(OUTPUT)
 	$(call msg,BINARY,$@)
-	$(Q)$(CC) $(CFLAGS) $^ $(LDFLAGS) -lelf -lz -o $@
+	$(Q)$(CC) $(CFLAGS) $< $(COMMON_OBJ) -L. -lbpf $(LDFLAGS) -lelf -lz -o $@
 
 ifeq ($(USE_BLAZESYM),1)
 $(patsubst %,$(OUTPUT)/%.o,$(BZ_APPS)): $(OUTPUT)/blazesym.h
