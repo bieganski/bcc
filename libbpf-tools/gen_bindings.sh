@@ -2,17 +2,33 @@
 
 set -eux
 
-BPF_HEADER=./bpftool/libbpf/src/libbpf.h
-file -E $BPF_HEADER
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
 
-TEMP=libbpf_h__for_ctypesgen.h
+pushd $SCRIPT_DIR
 
-pip3 install ctypesgen
-# echo FOUND `grep -c ":0;" $BPF_HEADER` EMPTY UNIONS
-# grep -v ":0;" $BPF_HEADER > $TEMP
-echo "#define __signed__ signed" > $TEMP
-sed 's/:0;/;/g' $BPF_HEADER >> $TEMP
-ctypesgen -I `dirname $BPF_HEADER` $TEMP -l ./libbpf.so.1 > gen_bindings.py
+# Prerequsistes.
+pip3 install --upgrade pip
+pip3 install git+https://github.com/bieganski/ctypesgen
+rm -rf gen
+mkdir gen
 
-# rm $TEMP
+# libbpf.h (together with workaround required by 'ctypesgen')
+LIBPF_H=./bpftool/libbpf/src/libbpf.h
+file -E $LIBPF_H
+OUT=gen/libbpf.h
+echo "#define __signed__ signed" > $OUT
+cat $LIBPF_H  >> $OUT
+sed -i 's/:0;/;/g' $OUT
 
+# bpf.h
+BPF_H=/usr/include/linux/bpf.h
+file -E $BPF_H
+OUT=gen/bpf.h
+echo "#define __signed__ signed" > $OUT
+cat $BPF_H >> $OUT
+sed -i 's/:0;/;/g' $OUT
+
+popd > /dev/null
+
+ctypesgen -I `dirname $LIBPF_H` gen/libbpf.h -l ./libbpf.so.1 > gen/libbpf.py
+ctypesgen gen/bpf.h -l ./libbpf.so.1 > gen/bpf.py
