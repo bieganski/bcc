@@ -89,7 +89,7 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
         
         faulty_indices = []
         current_offset = 0
-        for i, tup in enumerate(node.value.elts[:-1]):
+        for i, tup in enumerate(node.value.elts):
             if not isinstance(tup, ast.Tuple):
                 raise ValueError("Not a tuple!")
             
@@ -122,41 +122,30 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
                 current_offset += (multiplier * value)
                 continue
 
-            tup2 = tup.elts[2]
-            if not isinstance(tup2, ast.Constant):
+            if not isinstance(tup.elts[2], ast.Constant):
+                raise ValueError("Unexpected type of tup.elts[2]")
+            if tup.elts[2].value != 0:
                 continue
-            if tup2.value != 0:
-                continue
-            # Finally faulty node confirmed.
+            print(f"faulty node found: {astor.to_source(tup)}")
             assert len(tup.elts) == 3 # make sure we are not missing some data
-            tup.elts = tup.elts[:2]
-            faulty_indices.append((i, current_offset, tup.elts[1]))
+            faulty_indices.append((i, current_offset, tup.elts[1], tup))
 
-        for i, current_offset, ctypes_type in faulty_indices:
+        for i, current_offset, ctypes_type, _ in faulty_indices:
 
-        # struct_bpf_object_open_opts._fields_ = [
-        #     ('sz', c_size_t),
-        #     ('object_name', String),
-        #     ('relaxed_maps', c_bool),
-        #     ('pin_root_path', String),
-        #     ('unnamed_bpf_object_open_opts_1', c_long, 0),
-        #     ('kconfig', String),
-        #     ('btf_custom_path', String),
-        #     ('kernel_log_buf', String),
-        #     ('kernel_log_size', c_size_t),
-        #     ('kernel_log_level', __u32),
-        #     ('unnamed_bpf_object_open_opts_2', c_size_t, 0),
-        # ]
-            
             ctypes_alignment_name = getattr(ctypes_type, "attr", None) or getattr(ctypes_type, "id", None) or ctypes_type.name.id
             requested_alignment = eval(f"ctypes.sizeof(ctypes.{ctypes_alignment_name })")
             num_padding_bytes = requested_alignment - (current_offset % requested_alignment)
+            print(f"inserting padding of {num_padding_bytes} bytes")
             
             for j in range(num_padding_bytes):
                 padder = ast.parse('("test", ctypes.c_char)').body[0].value
                 assert isinstance(padder, ast.Tuple)
                 padder.elts[0] = ast.Constant(value=f"padding_mock{i}_{j}")
                 node.value.elts.insert(i, padder)
+            
+        for _, _, _, faulty in faulty_indices:
+            print("poping ", astor.to_source(faulty))
+            node.value.elts.pop(node.value.elts.index(faulty))
 
         return node
 
