@@ -19,8 +19,25 @@ if bpf_obj is None:
 
 c_char_p = POINTER(c_char)
 
-xx =libbpf.struct_bpf_uprobe_opts(func_name=libbpf.String(b"a"))
-raise ValueError(x(xx))
+uprobe_opts =libbpf.struct_bpf_uprobe_opts(
+    sz=sizeof(libbpf.struct_bpf_uprobe_opts),
+    ref_ctr_offset=0,
+    bpf_cookie=0,
+    retprobe=False,
+    func_name=libbpf.String(b"malloc")
+)
+
+bpf_link = libbpf.bpf_program__attach_uprobe_opts(
+    prog=bpf_obj.contents.programs, # bpf_program*
+    pid=0, # own process
+    binary_path=libbpf.String(b"/lib/x86_64-linux-gnu/libc.so.6"),
+    func_offset=0, # size_t, will be auto-determined
+    opts=uprobe_opts,
+)
+if bpf_link is None:
+    raise ValueError("bpf_program__attach_uprobe_opts returned NULL!")
+
+raise ValueError(bpf_link)
 
 ret = libbpf.bpf_object__load(bpf_obj)
 if ret != 0:
