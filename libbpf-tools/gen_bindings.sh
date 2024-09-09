@@ -22,7 +22,7 @@ file -E $LIBBPF_H
 # OUT=gen/libbpf.h
 # echo "#define __signed__ signed" > $OUT
 # cat $LIBPF_H  >> $OUT
-sed -i 's/:0;/;/g' $LIBBPF_H
+# sed -i 's/:0;/;/g' $LIBBPF_H
 
 # bpf.h
 BPF_H=/usr/include/linux/bpf.h
@@ -30,7 +30,7 @@ file -E $BPF_H
 OUT=gen/bpf.h
 # echo "#define __signed__ signed" > $OUT
 # cat $BPF_H >> $OUT
-sed 's/:0;/;/g' $BPF_H > $OUT
+# sed 's/:0;/;/g' $BPF_H > $OUT
 
 popd > /dev/null
 
@@ -42,3 +42,5 @@ ctypesgen \
 -I /home/m.bieganski/github/libbpf/include/ \
  -l ./libbpf.so.1 \
 $LIBBPF_C $LIBBPF_H > gen/libbpf.py
+
+./do_ast.py gen/libbpf.py gen/libbpf.py
