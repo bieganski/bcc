@@ -119,7 +119,10 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
                             value = ctypes.sizeof(ctypes.c_char_p)
                         else:
                             value = eval(f"ctypes.sizeof(ctypes.{name})")
-                current_offset += (multiplier * value)
+                current_slot_size = value - (current_offset % value)
+                padding = 0 if (current_slot_size == value) else current_slot_size
+                current_offset += padding + value
+                print(f"FIELD {astor.to_source(tup)} increased by {padding + value}")
                 continue
 
             if not isinstance(tup.elts[2], ast.Constant):
