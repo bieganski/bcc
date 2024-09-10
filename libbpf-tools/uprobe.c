@@ -14,7 +14,6 @@ static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va
 
 int main(int argc, char **argv)
 {
-
 	if(argc != 3) {
         printf("usage: %s <path to ELF> <symbol name>\n", argv[0]);
         return 1;
@@ -35,6 +34,11 @@ int main(int argc, char **argv)
 
 	/* Load and verify BPF application */
 	skel = uprobe_bpf__open_and_load();
+	
+	for(int i = 312; i < 312 + 20; i++) {
+		printf("%x\t", ((char*) (skel->obj))[i]);
+	}; printf("\n");
+		
 	if (!skel) {
 		perror("Failed to open and load BPF skeleton");
 		goto cleanup;
