@@ -23,7 +23,8 @@ def run_shell(cmd: str) -> tuple[str, str]:
 def test_struct_packing():
     libbpf_path = "./libbpf.so.1" # XXX
     for k, v in libbpf.__dict__.items():
-        if k.startswith("struct_") and "bpf" in k:
+        print(k)
+        if k.startswith("struct_") and ("bpf_" in k or "_object_" in k):
             # Calculate ctypes struct size.
             instance = v()
             ctypes_size = sizeof(instance)

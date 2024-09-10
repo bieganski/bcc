@@ -122,14 +122,14 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
                 current_slot_size = value - (current_offset % value)
                 padding = 0 if (current_slot_size == value) else current_slot_size
                 current_offset += padding + value
-                print(f"FIELD {astor.to_source(tup)} increased by {padding + value}")
+                # print(f"FIELD {astor.to_source(tup)} increased by {padding + value}")
                 continue
 
             if not isinstance(tup.elts[2], ast.Constant):
                 raise ValueError("Unexpected type of tup.elts[2]")
             if tup.elts[2].value != 0:
                 continue
-            print(f"faulty node found: {astor.to_source(tup)}")
+            # print(f"faulty node found: {astor.to_source(tup)}")
             assert len(tup.elts) == 3 # make sure we are not missing some data
             faulty_indices.append((i, current_offset, tup.elts[1], tup))
 
@@ -138,7 +138,7 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
             ctypes_alignment_name = getattr(ctypes_type, "attr", None) or getattr(ctypes_type, "id", None) or ctypes_type.name.id
             requested_alignment = eval(f"ctypes.sizeof(ctypes.{ctypes_alignment_name })")
             num_padding_bytes = requested_alignment - (current_offset % requested_alignment)
-            print(f"inserting padding of {num_padding_bytes} bytes")
+            # print(f"inserting padding of {num_padding_bytes} bytes")
             
             for j in range(num_padding_bytes):
                 padder = ast.parse('("test", ctypes.c_char)').body[0].value
@@ -147,7 +147,7 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
                 node.value.elts.insert(i, padder)
             
         for _, _, _, faulty in faulty_indices:
-            print("poping ", astor.to_source(faulty))
+            # print("poping ", astor.to_source(faulty))
             node.value.elts.pop(node.value.elts.index(faulty))
 
         return node
