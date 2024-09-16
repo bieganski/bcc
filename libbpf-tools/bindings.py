@@ -46,6 +46,54 @@ def test_struct_packing():
 # test_struct_packing()
 # raise ValueError("K")
 
+import ctypes
+
+from typing import Type
+
+def bpf__create_skeleton() -> "ctypes.POINTER(libbpf.bpf_object_skeleton)":
+    
+    def alloc_writable_buf(type: Type[ctypes.Structure]) -> "ctypes.pointer(ctypes.Structure)":
+        size = ctypes.sizeof(type)
+        assert size
+        ptr = ctypes.create_string_buffer(init=0, size=size)
+        return ctypes.cast(ptr, ctypes.POINTER(type))
+    
+    sizeof_skel = ctypes.sizeof(libbpf.bpf_object_skeleton)
+    sizeof_obj = ctypes.sizeof(libbpf.bpf_object) # FIXME: assert sizeof_obj >= real_sizeof_obj (from DWARF)
+
+    s_ptr = alloc_writable_buf(libbpf.bpf_object_skeleton)
+    o_ptr = alloc_writable_buf(libbpf.bpf_object)
+    
+    s = s_ptr.contents
+
+    s.sz = sizeof_skel
+    s.name = libbpf.String(b"uprobe_bpf")
+    s.obj = ctypes.cast(o_ptr, ctypes.POINTER(o_ptr.__class__))
+    
+    
+    ################    MAPS
+    s.map_cnt = 1
+    s.map_skel_sz = ctypes.sizeof(libbpf.bpf_map_skeleton)
+    s.maps = alloc_writable_buf(libbpf.bpf_map_skeleton)
+
+    m = s.maps.contents
+    m.name = libbpf.String(b"uprobe_b.rodata")
+    # TODO - m.mmaped not set, as it looked strange to me.
+    null_ptr = alloc_writable_buf(ctypes.POINTER(libbpf.struct_bpf_map))
+    m.map = null_ptr # TODO: later check if it's non-null (should be set by libbpf)
+
+
+    ################    PROGS
+    s.prog_cnt = 1
+    s.prog_skel_sz = ctypes.sizeof(libbpf.bpf_prog_skeleton)
+    s.progs = alloc_writable_buf(libbpf.bpf_prog_skeleton)
+
+
+bpf__create_skeleton()
+skel = libbpf.bpf_object__open_skeleton()
+
+raise ValueError("OK")
+
 open_opts = libbpf.bpf_object_open_opts(sz=sizeof(libbpf.struct_bpf_object_open_opts), btf_custom_path=libbpf.String(b"siema"))
 bpf_obj = libbpf.bpf_object__open_file("./.output/uprobe.bpf.o", byref(open_opts))
 # raise ValueError("stop")
