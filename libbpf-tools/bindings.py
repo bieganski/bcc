@@ -23,7 +23,7 @@ def run_shell(cmd: str) -> tuple[str, str]:
 def test_struct_packing():
     libbpf_path = "./libbpf.so.1" # XXX
     for k, v in libbpf.__dict__.items():
-        if k.startswith("struct_") and "bpf" in k:
+        if k.startswith("struct_") and (("bpf" in k) or ("btf" in k) or ("elf_state" in k)):
             # Calculate ctypes struct size.
             instance = v()
             ctypes_size = sizeof(instance)
@@ -43,9 +43,10 @@ def test_struct_packing():
 
             print(f"Symbol {name_demangled} OK, size {real_size}")
 
-test_struct_packing()
-raise ValueError("K")
-open_opts = libbpf.bpf_object_open_opts(btf_custom_path=libbpf.String(b"siema"))
+# test_struct_packing()
+# raise ValueError("K")
+
+open_opts = libbpf.bpf_object_open_opts(sz=sizeof(libbpf.struct_bpf_object_open_opts), btf_custom_path=libbpf.String(b"siema"))
 bpf_obj = libbpf.bpf_object__open_file("./.output/uprobe.bpf.o", byref(open_opts))
 # raise ValueError("stop")
 
@@ -55,7 +56,7 @@ bpf_obj = libbpf.bpf_object__open_file("./.output/uprobe.bpf.o", byref(open_opts
 
 # lol = pointer(cast(bpf_obj, c_void_p))[312]
 print("ad", ad(bpf_obj))
-raise ValueError(bpf_obj.contents)
+raise ValueError(x(bpf_obj.contents))
 ptr = cast(bpf_obj, c_void_p)
 
 raise ValueError(ad(bpf_obj.contents))

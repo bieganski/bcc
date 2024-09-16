@@ -142,10 +142,11 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
             assert len(tup.elts) == 3 # make sure we are not missing some data
             try:
                 name = node.targets[0].value.id
-                if "bpf_usdt_opts" in name:
-                    print((i, current_offset, tup.elts[1], tup))
             except:
-                pass
+                name ="unknown"
+            if "struct_bpf_object" == name:
+                raise ValueError("OK")
+                print((i, current_offset, tup.elts[1], tup))
             faulty_indices.append((i, current_offset, tup.elts[1], tup))
 
         for i, current_offset, ctypes_type, XD in faulty_indices:
