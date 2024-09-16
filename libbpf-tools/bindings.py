@@ -8,6 +8,8 @@ import gen.libbpf as libbpf
 from inspect import getmembers
 from pprint import pformat
 
+from pathlib import Path
+
 x = lambda a : pformat(getmembers(a))
 ad = lambda a : hex(addressof(a))
 
@@ -70,7 +72,7 @@ def bpf__create_skeleton() -> "ctypes.POINTER(libbpf.bpf_object_skeleton)":
     s.name = libbpf.String(b"uprobe_bpf")
     s.obj = ctypes.cast(o_ptr, ctypes.POINTER(o_ptr.__class__))
     
-    
+
     ################    MAPS
     s.map_cnt = 1
     s.map_skel_sz = ctypes.sizeof(libbpf.bpf_map_skeleton)
@@ -82,11 +84,24 @@ def bpf__create_skeleton() -> "ctypes.POINTER(libbpf.bpf_object_skeleton)":
     null_ptr = alloc_writable_buf(ctypes.POINTER(libbpf.struct_bpf_map))
     m.map = null_ptr # TODO: later check if it's non-null (should be set by libbpf)
 
+    # TODO: ctypes.addressof
+
 
     ################    PROGS
     s.prog_cnt = 1
     s.prog_skel_sz = ctypes.sizeof(libbpf.bpf_prog_skeleton)
     s.progs = alloc_writable_buf(libbpf.bpf_prog_skeleton)
+
+    p = s.progs.contents
+    p.name = libbpf.String(b"xdddwrite")
+    null_ptr = alloc_writable_buf(ctypes.POINTER(libbpf.bpf_program))
+    p.prog = null_ptr 
+
+    bpf_elf = Path("./.output/uprobe.bpf.o")
+    assert bpf_elf.is_file()
+
+    p.data_sz = bpf_elf.stat().st_size
+    p.data = bpf_elf.read_bytes()
 
 
 bpf__create_skeleton()
