@@ -140,9 +140,18 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
                 continue
             # print(f"faulty node found: {astor.to_source(tup)}")
             assert len(tup.elts) == 3 # make sure we are not missing some data
+            try:
+                name = node.targets[0].value.id
+                if "bpf_usdt_opts" in name:
+                    print((i, current_offset, tup.elts[1], tup))
+            except:
+                pass
             faulty_indices.append((i, current_offset, tup.elts[1], tup))
 
         for i, current_offset, ctypes_type, XD in faulty_indices:
+
+            if i == len(node.value.elts) - 1:
+                continue
 
             ctypes_alignment_name = getattr(ctypes_type, "attr", None) or getattr(ctypes_type, "id", None) or ctypes_type.name.id
             requested_alignment = eval(f"ctypes.sizeof(ctypes.{ctypes_alignment_name })")
