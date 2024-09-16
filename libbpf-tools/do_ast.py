@@ -31,7 +31,13 @@ ctypes.__s32 = ctypes.c_int
 ctypes.__u32 = ctypes.c_uint
 ctypes.__s64 = ctypes.c_longlong
 ctypes.__u64 = ctypes.c_ulonglong
-ctypes.enum_bpf_tc_attach_point = ctypes.c_int
+
+# ctypes.enum_bpf_tc_attach_point = ctypes.c_int
+# ctypes.enum_probe_attach_mode = ctypes.c_int
+# ctypes.enum_bpf_attach_type = ctypes.c_int
+ctypes.enum_bpf_tc_attach_point = ctypes.c_char
+ctypes.enum_probe_attach_mode = ctypes.c_char
+ctypes.enum_bpf_attach_type = ctypes.c_char
 
 x = lambda a: pformat(getmembers(a))
 faulty_nodes = []
@@ -118,27 +124,31 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
                         if name == "String":
                             value = ctypes.sizeof(ctypes.c_char_p)
                         else:
-                            value = eval(f"ctypes.sizeof(ctypes.{name})")
+                            try:
+                                value = eval(f"ctypes.sizeof(ctypes.{name})")
+                            except:
+                                raise ValueError(x(cur))
                 current_slot_size = value - (current_offset % value)
                 padding = 0 if (current_slot_size == value) else current_slot_size
                 current_offset += padding + value
-                print(f"FIELD {astor.to_source(tup)} increased by {padding + value}")
+                # print(f"FIELD {astor.to_source(tup)} increased by {padding + value}")
                 continue
 
             if not isinstance(tup.elts[2], ast.Constant):
                 raise ValueError("Unexpected type of tup.elts[2]")
             if tup.elts[2].value != 0:
                 continue
-            print(f"faulty node found: {astor.to_source(tup)}")
+            # print(f"faulty node found: {astor.to_source(tup)}")
             assert len(tup.elts) == 3 # make sure we are not missing some data
             faulty_indices.append((i, current_offset, tup.elts[1], tup))
 
-        for i, current_offset, ctypes_type, _ in faulty_indices:
+        for i, current_offset, ctypes_type, XD in faulty_indices:
 
             ctypes_alignment_name = getattr(ctypes_type, "attr", None) or getattr(ctypes_type, "id", None) or ctypes_type.name.id
             requested_alignment = eval(f"ctypes.sizeof(ctypes.{ctypes_alignment_name })")
             num_padding_bytes = requested_alignment - (current_offset % requested_alignment)
-            print(f"inserting padding of {num_padding_bytes} bytes")
+            # print(f"BAD: {x(XD)}")
+            # print(f"inserting padding of {num_padding_bytes} bytes")
             
             for j in range(num_padding_bytes):
                 padder = ast.parse('("test", ctypes.c_char)').body[0].value
@@ -147,10 +157,50 @@ class CtypesStruct_FaultyNodesCollector(ast.NodeTransformer):
                 node.value.elts.insert(i, padder)
             
         for _, _, _, faulty in faulty_indices:
-            print("poping ", astor.to_source(faulty))
+            # print("poping ", astor.to_source(faulty))
             node.value.elts.pop(node.value.elts.index(faulty))
 
         return node
+
+
+buggy_structs = []
+
+class XD(ast.NodeTransformer):
+    """
+    Collects "faulty" assignments.
+    "faulty assignment" is defined as follows:
+        * assigns to <whatever>._fields_
+        * assigns a list of tuples, let's call it 'lst', and following holds: any([x[2] == 0 for x in lst])
+    """
+    def visit_Assign(self, node):
+        global buggy_structs
+        # assumption: format compatible with 'ctypesgen' output.
+        if isinstance((v := node.value), ast.List):
+            # if len(v.elts) == 1:
+            if v.elts:
+                if isinstance((lit := v.elts[0]), ast.Constant):
+                    if lit.value == "__error_if_negative":
+                        struct_name = node.targets[0].value.id
+                        buggy_structs.append(struct_name)
+                        print(f"buggy_structs: {struct_name}")
+                        return None
+                elif isinstance((tup := v.elts[0]), ast.Tuple):
+                    # raise ValueError(x(tup))
+                    if tup.elts and isinstance((lit := tup.elts[0]), ast.Constant):
+                        if lit.value == "__error_if_negative":
+                            struct_name = node.targets[0].value.id
+                            buggy_structs.append(struct_name)
+                            print(f"buggy_structs: {struct_name}")
+                            return None
+        return node
+        # try:
+        #     if node.targets[0].value.id in buggy_structs:
+        #         return ast.parse("xd = 1")
+        # except:
+        #     return node
+
+
+
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
@@ -161,7 +211,12 @@ if __name__ == "__main__":
     input, output = args.input, args.output
 
     source_code = input.read_text()
+    # tree = ast.parse("a = ['__error_if_negative']")
     tree = ast.parse(source_code)
+
+    node_transformer = XD()
+    tree = node_transformer.visit(tree)
+    # raise ValueError("OKL")
     
     # initial step
     Test().visit(tree)

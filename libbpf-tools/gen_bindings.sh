@@ -16,8 +16,8 @@ rm -rf gen
 mkdir gen
 
 # libbpf.h (together with workaround required by 'ctypesgen')
-LIBBPF_C=./bpftool/libbpf/src/libbpf.c
-LIBBPF_H=./bpftool/libbpf/src/libbpf.h
+LIBBPF_C=/home/m.bieganski/github/libbpf/src/libbpf.c
+LIBBPF_H=/home/m.bieganski/github/libbpf/src/libbpf.h
 file -E $LIBBPF_H
 # OUT=gen/libbpf.h
 # echo "#define __signed__ signed" > $OUT
@@ -25,7 +25,7 @@ file -E $LIBBPF_H
 # sed -i 's/:0;/;/g' $LIBBPF_H
 
 # bpf.h
-BPF_H=/usr/include/linux/bpf.h
+BPF_H=/home/m.bieganski/github/libbpf/include/uapi/linux/bpf.h
 file -E $BPF_H
 OUT=gen/bpf.h
 # echo "#define __signed__ signed" > $OUT
@@ -35,12 +35,18 @@ OUT=gen/bpf.h
 popd > /dev/null
 
 # ctypesgen -I `dirname $LIBBPF_H` gen/libbpf.h ./bpftool/libbpf/src/libbpf.c -l ./libbpf.so.1 > gen/libbpf.py
-ctypesgen -D__signed__=signed $OUT -l ./libbpf.so.1 > gen/bpf.py
+ctypesgen -D__signed__=signed $BPF_H -l ./libbpf.so.1 > gen/bpf.py
 
+
+# -l ./libbpf.so.1 \
 ctypesgen \
+-l ./libbpf.so.1 \
 -D__signed__=signed \
+"-D__builtin_constant_p(x)='1'" \
 -I /home/m.bieganski/github/libbpf/include/ \
- -l ./libbpf.so.1 \
+-I /home/m.bieganski/github/libbpf/include/uapi/ \
 $LIBBPF_C $LIBBPF_H > gen/libbpf.py
 
+wc -l gen/libbpf.py
 ./do_ast.py gen/libbpf.py gen/libbpf.py
+wc -l gen/libbpf.py
