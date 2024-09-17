@@ -59,16 +59,15 @@ def bpf__create_skeleton() -> "ctypes.POINTER(libbpf.bpf_object_skeleton)":
         assert size
         ptr = ctypes.create_string_buffer(init=0, size=size)
         return ctypes.cast(ptr, ctypes.POINTER(type))
-    
-    sizeof_skel = ctypes.sizeof(libbpf.bpf_object_skeleton)
-    sizeof_obj = ctypes.sizeof(libbpf.bpf_object) # FIXME: assert sizeof_obj >= real_sizeof_obj (from DWARF)
+
+    # sizeof_obj = ctypes.sizeof(libbpf.bpf_object) # FIXME: assert sizeof_obj >= real_sizeof_obj (from DWARF)
 
     s_ptr = alloc_writable_buf(libbpf.bpf_object_skeleton)
     o_ptr = alloc_writable_buf(libbpf.bpf_object)
     
     s = s_ptr.contents
 
-    s.sz = sizeof_skel
+    s.sz = ctypes.sizeof(libbpf.bpf_object_skeleton)
     s.name = libbpf.String(b"uprobe_bpf")
     s.obj = ctypes.cast(o_ptr, ctypes.POINTER(o_ptr.__class__))
     
@@ -83,9 +82,7 @@ def bpf__create_skeleton() -> "ctypes.POINTER(libbpf.bpf_object_skeleton)":
     # TODO - m.mmaped not set, as it looked strange to me.
     null_ptr = alloc_writable_buf(ctypes.POINTER(libbpf.struct_bpf_map))
     m.map = null_ptr # TODO: later check if it's non-null (should be set by libbpf)
-
     # TODO: ctypes.addressof
-
 
     ################    PROGS
     s.prog_cnt = 1
@@ -99,13 +96,27 @@ def bpf__create_skeleton() -> "ctypes.POINTER(libbpf.bpf_object_skeleton)":
 
     bpf_elf = Path("./.output/uprobe.bpf.o")
     assert bpf_elf.is_file()
+    elf_bytes = bpf_elf.read_bytes()
+    elf_size = len(elf_bytes)
+    elf_bytes_wrapped = ctypes.cast(ctypes.create_string_buffer(init=elf_bytes, size=elf_size), c_void_p)
 
-    p.data_sz = bpf_elf.stat().st_size
-    p.data = bpf_elf.read_bytes()
+    s.data_sz = elf_size
+    s.data = elf_bytes_wrapped
+    
 
+    # addr = elf_bytes_wrapped.value
+    # file = Path("/proc/self/mem").open("rb")
+    # file.seek(addr)
+    # data = file.read(4)
+    
+    # raise ValueError(s.data)
+    # s.data = ctypes.cast(ctypes.create_string_buffer(init=elf_bytes, size=elf_size), c_void_p)
+    return s_ptr
 
-bpf__create_skeleton()
-skel = libbpf.bpf_object__open_skeleton()
+# obj = bpf_object__open_mem(s->data, s->data_sz, &skel_opts);
+# either s->data or s->data_sz is 0
+s_ptr = bpf__create_skeleton()
+skel = libbpf.bpf_object__open_skeleton(s_ptr, None)
 
 raise ValueError("OK")
 
