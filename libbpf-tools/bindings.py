@@ -10,6 +10,7 @@ import sys
 import ctypes
 from typing import Type
 import subprocess
+import time
 
 def die(msg: str = "", exit_code=1, msg_file=sys.stderr):
     if msg:
@@ -142,22 +143,35 @@ programs = s_ptr.contents.obj.contents.contents.programs
 # time.sleep(2)
 # raise ValueError("OK")
 
+pid_t = ctypes.c_int
+pid_all = pid_t(-1)
+pid_self = pid_t(0)
+
 bpf_link = libbpf.bpf_program__attach_uprobe_opts(
     programs,
-    0,                                                     # pid=0 (own process)
-    libbpf.String(b"/lib/x86_64-linux-gnu/libc.so.6"),     # binary_path
+    pid_all,                                                     # pid=0 (own process)
+    libbpf.String(b"/usr/lib/x86_64-linux-gnu/libc.so.6"),     # binary_path
     0,                                                     # func_offset (will be auto-determined anyway)
     ctypes.byref(uprobe_opts),                             # opts
 )
+
+for addr in (ctypes.addressof(bpf_link), ctypes.addressof(bpf_link.contents)):
+    f = Path("/proc/self/mem").open("rb") 
+    f.seek(addr + 8 * 3)
+    data = f.read(4)
+    print(data)
+# print(ctypes.addressof(bpf_link))
+# print(ctypes.addressof(bpf_link.contents))
+time.sleep(2)
 
 
 
 if bpf_link is None:
     raise ValueError("bpf_program__attach_uprobe_opts returned NULL!")
 
-print(bpf_link.value)
-
 print("Successfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see output of the BPF programs.")
+time.sleep(99999)
+
 raise ValueError("OK")
 
 import time
