@@ -1,19 +1,24 @@
 #!/usr/bin/env python3
 
 from ctypes import *
-
 import gen.bpf as bpf
 import gen.libbpf as libbpf
-
 from inspect import getmembers
 from pprint import pformat
-
 from pathlib import Path
+import sys
+import ctypes
+from typing import Type
+import subprocess
+
+def die(msg: str = "", exit_code=1, msg_file=sys.stderr):
+    if msg:
+        print(msg, file=msg_file)
+    exit(exit_code)
 
 x = lambda a : pformat(getmembers(a))
 ad = lambda a : hex(addressof(a))
 
-import subprocess
 def run_shell(cmd: str) -> tuple[str, str]:
     
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, universal_newlines=True, executable="/bin/bash")
@@ -47,10 +52,6 @@ def test_struct_packing():
 
 # test_struct_packing()
 # raise ValueError("K")
-
-import ctypes
-
-from typing import Type
 
 def bpf__create_skeleton() -> "ctypes.POINTER(libbpf.bpf_object_skeleton)":
     
@@ -116,7 +117,51 @@ def bpf__create_skeleton() -> "ctypes.POINTER(libbpf.bpf_object_skeleton)":
 # obj = bpf_object__open_mem(s->data, s->data_sz, &skel_opts);
 # either s->data or s->data_sz is 0
 s_ptr = bpf__create_skeleton()
-skel = libbpf.bpf_object__open_skeleton(s_ptr, None)
+err = libbpf.bpf_object__open_skeleton(s_ptr, None)
+if err != 0:
+    die("libbpf.bpf_object__open_skeleton failed")
+
+err = libbpf.bpf_object__load_skeleton(s_ptr)
+if err != 0:
+    die("libbpf.bpf_object__load_skeleton failed")
+
+uprobe_opts =libbpf.struct_bpf_uprobe_opts(
+    sz=sizeof(libbpf.struct_bpf_uprobe_opts),
+    ref_ctr_offset=0,
+    bpf_cookie=0,
+    retprobe=False,
+    func_name=libbpf.String(b"malloc")
+)
+
+
+programs = None
+programs = s_ptr.contents.obj.contents.contents.programs
+# print(x(programs))
+# print("OK")
+# import time
+# time.sleep(2)
+# raise ValueError("OK")
+
+bpf_link = libbpf.bpf_program__attach_uprobe_opts(
+    programs,
+    0,                                                     # pid=0 (own process)
+    libbpf.String(b"/lib/x86_64-linux-gnu/libc.so.6"),     # binary_path
+    0,                                                     # func_offset (will be auto-determined anyway)
+    ctypes.byref(uprobe_opts),                             # opts
+)
+
+
+
+if bpf_link is None:
+    raise ValueError("bpf_program__attach_uprobe_opts returned NULL!")
+
+print(bpf_link.value)
+
+print("Successfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see output of the BPF programs.")
+raise ValueError("OK")
+
+import time
+time.sleep(2)
 
 raise ValueError("OK")
 
