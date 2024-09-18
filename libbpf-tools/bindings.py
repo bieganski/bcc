@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 
-from ctypes import *
 import gen.libbpf as libbpf
 from inspect import getmembers
 from pprint import pformat
 from pathlib import Path
 import sys
 import ctypes
-from typing import Type
+from typing import Type, Optional
 import subprocess
 import time
 
@@ -32,7 +31,7 @@ def test_struct_packing():
         if k.startswith("struct_") and (("bpf" in k) or ("btf" in k) or ("elf_state" in k)):
             # Calculate ctypes struct size.
             instance = v()
-            ctypes_size = sizeof(instance)
+            ctypes_size = ctypes.sizeof(instance)
 
             # Calculate real struct size.
             name_demangled = k[7:]
@@ -95,49 +94,65 @@ def bpf__create_skeleton() -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
     assert bpf_elf.is_file()
     elf_bytes = bpf_elf.read_bytes()
     elf_size = len(elf_bytes)
-    elf_bytes_wrapped = ctypes.cast(ctypes.create_string_buffer(init=elf_bytes, size=elf_size), c_void_p)
+    elf_bytes_wrapped = ctypes.cast(ctypes.create_string_buffer(init=elf_bytes, size=elf_size), ctypes.c_void_p)
 
     s.data_sz = elf_size
     s.data = elf_bytes_wrapped
 
     return s_ptr
 
-s_ptr = bpf__create_skeleton()
-err = libbpf.bpf_object__open_skeleton(s_ptr, None)
-if err != 0:
-    die("libbpf.bpf_object__open_skeleton failed")
 
-err = libbpf.bpf_object__load_skeleton(s_ptr)
-if err != 0:
-    die("libbpf.bpf_object__load_skeleton failed")
+def main(lib: Path, symbol: str, btf: Optional[Path]):
+    if btf:
+        if not btf.exists():
+            raise ValueError(f"Custom BTF path does not exist! {btf}")
+        open_opts = libbpf.bpf_object_open_opts(sz=ctypes.sizeof(libbpf.struct_bpf_object_open_opts), btf_custom_path=libbpf.String(bytes(btf, "ascii")))
+        open_opts_ptr = ctypes.byref(open_opts)
+    else:
+        open_opts_ptr = None
 
-uprobe_opts =libbpf.struct_bpf_uprobe_opts(
-    sz=sizeof(libbpf.struct_bpf_uprobe_opts),
-    ref_ctr_offset=0,
-    bpf_cookie=0,
-    retprobe=False,
-    func_name=libbpf.String(b"malloc")
-)
+    # equivalent of auto-generated ".skel.h" file.
+    s_ptr = bpf__create_skeleton()
 
-programs = None
-programs = s_ptr.contents.obj.contents.contents.programs
+    err = libbpf.bpf_object__open_skeleton(s_ptr, open_opts_ptr)
+    if err != 0:
+        die("libbpf.bpf_object__open_skeleton failed")
 
-pid_t = ctypes.c_int
-pid_all = pid_t(-1)
-pid_self = pid_t(0)
+    err = libbpf.bpf_object__load_skeleton(s_ptr)
+    if err != 0:
+        die("libbpf.bpf_object__load_skeleton failed")
 
-bpf_link = libbpf.bpf_program__attach_uprobe_opts(
-    programs,
-    pid_all,                                                     # pid=0 (own process)
-    libbpf.String(b"/usr/lib/x86_64-linux-gnu/libc.so.6"),     # binary_path
-    0,                                                     # func_offset (will be auto-determined anyway)
-    ctypes.byref(uprobe_opts),                             # opts
-)
+    uprobe_opts =libbpf.struct_bpf_uprobe_opts(
+        sz=ctypes.sizeof(libbpf.struct_bpf_uprobe_opts),
+        retprobe=False,
+        func_name=libbpf.String(bytes(symbol, "ascii"))
+    )
 
-if bpf_link is None:
-    raise ValueError("bpf_program__attach_uprobe_opts returned NULL!")
+    programs_ptr = s_ptr.contents.obj.contents.contents.programs
 
-print("Successfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see output of the BPF programs.")
-time.sleep(99999)
+    pid_t = ctypes.c_int
+    pid_all, pid_self = pid_t(-1), pid_t(0)
 
-raise ValueError("OK")
+    bpf_link = libbpf.bpf_program__attach_uprobe_opts(
+        programs_ptr,
+        pid_all,                                               # pid=0 (own process)
+        libbpf.String(bytes(str(lib), "ascii")),                    # binary_path
+        0,                                                     # func_offset (will be auto-determined anyway)
+        ctypes.byref(uprobe_opts),                             # opts
+    )
+
+    if bpf_link is None:
+        raise ValueError("bpf_program__attach_uprobe_opts returned NULL!")
+
+    print("Successfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see output of the BPF programs.")
+    time.sleep(99999)
+
+    raise ValueError("OK")
+
+if __name__ == "__main__":
+    from argparse import ArgumentParser
+    parser = ArgumentParser(usage="XXX")
+    parser.add_argument("-l", "--lib", type=Path, required=True, help="path to the library to set userspace breakpoint at.")
+    parser.add_argument("-s", "--symbol", type=str, required=True, help="symbol (function) name to set breakpoint at (e.g. 'malloc').")
+    parser.add_argument("-b", "--btf", type=Path, help="custom BTF path. if not specified, the ")
+    main(**vars(parser.parse_args()))
