@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import gen.libbpf as libbpf
 from inspect import getmembers
 from pprint import pformat
 from pathlib import Path
@@ -9,6 +8,14 @@ import ctypes
 from typing import Type, Optional
 import subprocess
 import time
+import platform
+from enum import Enum
+
+import gen.libbpf as libbpf
+import gen.bpf as bpf
+
+libc = ctypes.CDLL(None)
+syscall = libc.syscall
 
 def die(msg: str = "", exit_code=1, msg_file=sys.stderr):
     if msg:
@@ -18,7 +25,6 @@ def die(msg: str = "", exit_code=1, msg_file=sys.stderr):
 x = lambda a : pformat(getmembers(a))
 
 def run_shell(cmd: str) -> tuple[str, str]:
-    
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, universal_newlines=True, executable="/bin/bash")
     stdout, stderr = process.communicate()
     if (ecode := process.returncode):
@@ -49,13 +55,61 @@ def test_struct_packing():
             print(f"Symbol {name_demangled} OK, size {real_size}")
 
 
-def bpf__create_skeleton() -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
+
+class CPU_Arch(Enum):
+    x86_64 = "x86_64"
+    riscv64 = "riscv64"
+    unknown = "unknown"
+
+def system_get_cpu_arch() -> CPU_Arch:
+    machine = platform.machine()
+    return CPU_Arch(machine) # TODO: handle 'unknown'
+
+bpf_syscall_nr = {
+    CPU_Arch.x86_64: 321,
+    CPU_Arch.riscv64: 280,
+}
+
+def alloc_writable_buf(type: Type[ctypes.Structure]) -> "ctypes._Pointer[ctypes.Structure]":
+    size = ctypes.sizeof(type)
+    assert size
+    ptr = ctypes.create_string_buffer(init=0, size=size)
+    return ctypes.cast(ptr, ctypes.POINTER(type))
+
+
+def skel_map_update_elem(fd: int, key: ctypes.c_void_p, value: ctypes.c_void_p, flags: int):
+    attr_ptr = alloc_writable_buf(bpf.union_bpf_attr)
+    attr_ptr.contents.map_fd = fd
+    attr_ptr.contents.key = ctypes.cast(key, ctypes.c_long)
+    attr_ptr.contents.value = ctypes.cast(value, ctypes.c_long)
+    attr_ptr.contents.flags = flags
     
-    def alloc_writable_buf(type: Type[ctypes.Structure]) -> "ctypes._Pointer[ctypes.Structure]":
-        size = ctypes.sizeof(type)
-        assert size
-        ptr = ctypes.create_string_buffer(init=0, size=size)
-        return ctypes.cast(ptr, ctypes.POINTER(type))
+    sys_bpf = bpf_syscall_nr(system_get_cpu_arch())
+    
+    return syscall(sys_bpf, bpf.BPF_MAP_UPDATE_ELEM, attr_ptr, ctypes.sizeof(bpf.union_bpf_attr))
+
+
+def patch_bpf_map(
+        obj_ptr: "ctypes._Pointer[libbpf.struct_bpf_object]",
+        section_name: str,
+        new_value: ctypes._Pointer,
+        ):
+    map_fd : int = libbpf.bpf_object__find_map_fd_by_name(obj_ptr, libbpf.String(section_name))
+    if map_fd <= 0:
+        raise ValueError(f"patch_bpf_map: lookup failed for {section_name}")
+    
+    syscall_err : int = skel_map_update_elem(
+        fd=map_fd,
+        key=ctypes.byref(ctypes.c_int(0)),
+        value=new_value,
+        flags=bpf.BPF_ANY
+    )
+
+    if syscall_err < 0:
+        raise ValueError(f"patch_bpf_map: BPF_MAP_UPDATE_ELEM syscall failed")
+    
+
+def bpf__create_skeleton() -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
 
     # sizeof_obj = ctypes.sizeof(libbpf.bpf_object) # FIXME: assert sizeof_obj >= real_sizeof_obj (from DWARF)
 
@@ -86,7 +140,7 @@ def bpf__create_skeleton() -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
     s.progs = alloc_writable_buf(libbpf.bpf_prog_skeleton)
 
     p = s.progs.contents
-    p.name = libbpf.String(b"xdddwrite")
+    p.name = libbpf.String(b"uprobe_funcname")
     null_ptr = alloc_writable_buf(ctypes.POINTER(libbpf.bpf_program))
     p.prog = null_ptr 
 
@@ -121,6 +175,13 @@ def main(lib: Path, symbol: str, btf: Optional[Path]):
     err = libbpf.bpf_object__load_skeleton(s_ptr)
     if err != 0:
         die("libbpf.bpf_object__load_skeleton failed")
+    
+    for section_name, value in zip(["data.symbol_name", ".data.library_path"], [symbol, str(lib)]):
+        patch_bpf_map(
+            obj=s_ptr.contents.obj,
+            section_name=section_name,
+            new_value=value,
+        )
 
     uprobe_opts =libbpf.struct_bpf_uprobe_opts(
         sz=ctypes.sizeof(libbpf.struct_bpf_uprobe_opts),
