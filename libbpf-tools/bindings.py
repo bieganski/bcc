@@ -77,43 +77,58 @@ def alloc_writable_buf(type: Type[ctypes.Structure]) -> "ctypes._Pointer[ctypes.
     return ctypes.cast(ptr, ctypes.POINTER(type))
 
 
-def skel_map_update_elem(fd: int, key: ctypes.c_void_p, value: ctypes.c_void_p, flags: int):
+def skel_map_update_elem(fd: int, key: ctypes.c_void_p, value: bytes, flags: int):
 
     print(f"C")
-    time.sleep(1)
     
     attr_ptr = alloc_writable_buf(bpf.union_bpf_attr)
-    attr_ptr.contents.map_fd = fd
-    attr_ptr.contents.key = ctypes.cast(key, ctypes.c_long)
-    attr_ptr.contents.value = ctypes.cast(value, ctypes.c_long)
-    attr_ptr.contents.flags = flags
 
-    print(f"D")
-    time.sleep(1)
+    def bpf_attr_find_map_manip_ctype() -> tuple[str, type]:
+        for (name, type), (next_name, _) in zip(bpf.union_bpf_attr._fields_, bpf.union_bpf_attr._fields_[1:]):
+            if next_name == "batch":
+                return (name, type)
+        else:
+            raise ValueError("suitable ctype needed for bpf_attr not found")
+    name, ctype = bpf_attr_find_map_manip_ctype()
+
+    def offsetofend(instance: ctypes.Structure, field: str):
+        return getattr(type(instance), field).offset + ctypes.sizeof(dict(instance._fields_)[field])
+
+    union_variant = getattr(attr_ptr.contents, name)
     
+    # TODO: '@arg key' not used
+    key_storage = ctypes.c_int(0)
+    key_addr : int = ctypes.addressof(key_storage)
     
-    sys_bpf = bpf_syscall_nr(system_get_cpu_arch())
+    union_variant.map_fd = fd
+    union_variant.key = key_addr
+    union_variant.flags = flags
+    # NOTE: union_variant.value is set in next step, as it's nested into another anon. union.
+
+    subname_matches = [(x, y) for (x, y) in ctype._fields_ if "unnamed_anon" in  x]
+    assert len(subname_matches) == 1
+    subname, _ = subname_matches[0]
+    union_subvariant = getattr(union_variant, subname)
     
-    return syscall(sys_bpf, bpf.BPF_MAP_UPDATE_ELEM, attr_ptr, ctypes.sizeof(bpf.union_bpf_attr))
+    value_ptr = ctypes.create_string_buffer(init=value, size=len(value))
+    union_subvariant.value = ctypes.addressof(value_ptr)
+
+    sys_bpf = bpf_syscall_nr[system_get_cpu_arch()]
+
+    return syscall(sys_bpf, bpf.BPF_MAP_UPDATE_ELEM, attr_ptr, offsetofend(instance=union_variant, field="flags"))
 
 
 def patch_bpf_map(
         obj_ptr: "ctypes._Pointer[libbpf.struct_bpf_object]",
         section_name: str,
-        new_value: ctypes._Pointer,
+        new_value: bytes,
         ):
     
-    print(f"A {obj_ptr}")
-    time.sleep(1)
-
+    assert isinstance(section_name, str) and isinstance(new_value, bytes)
     
     map_fd : int = libbpf.bpf_object__find_map_fd_by_name(obj_ptr, libbpf.String(bytes(section_name, "ascii")))
     if map_fd <= 0:
         raise ValueError(f"patch_bpf_map: lookup failed for {section_name}")
-    
-    print(f"B")
-    time.sleep(1)
-
     
     syscall_err : int = skel_map_update_elem(
         fd=map_fd,
@@ -199,7 +214,7 @@ def main(lib: Path, symbol: str, btf: Optional[Path]):
         patch_bpf_map(
             obj_ptr=obj_ptr,
             section_name=section_name,
-            new_value=value, # TODO libbpf.String(bytes(value, "ascii"))
+            new_value=bytes(value, "ascii") + b'\x00',
         )
 
     uprobe_opts =libbpf.struct_bpf_uprobe_opts(
