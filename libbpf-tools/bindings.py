@@ -78,11 +78,19 @@ def alloc_writable_buf(type: Type[ctypes.Structure]) -> "ctypes._Pointer[ctypes.
 
 
 def skel_map_update_elem(fd: int, key: ctypes.c_void_p, value: ctypes.c_void_p, flags: int):
+
+    print(f"C")
+    time.sleep(1)
+    
     attr_ptr = alloc_writable_buf(bpf.union_bpf_attr)
     attr_ptr.contents.map_fd = fd
     attr_ptr.contents.key = ctypes.cast(key, ctypes.c_long)
     attr_ptr.contents.value = ctypes.cast(value, ctypes.c_long)
     attr_ptr.contents.flags = flags
+
+    print(f"D")
+    time.sleep(1)
+    
     
     sys_bpf = bpf_syscall_nr(system_get_cpu_arch())
     
@@ -94,9 +102,18 @@ def patch_bpf_map(
         section_name: str,
         new_value: ctypes._Pointer,
         ):
-    map_fd : int = libbpf.bpf_object__find_map_fd_by_name(obj_ptr, libbpf.String(section_name))
+    
+    print(f"A {obj_ptr}")
+    time.sleep(1)
+
+    
+    map_fd : int = libbpf.bpf_object__find_map_fd_by_name(obj_ptr, libbpf.String(bytes(section_name, "ascii")))
     if map_fd <= 0:
         raise ValueError(f"patch_bpf_map: lookup failed for {section_name}")
+    
+    print(f"B")
+    time.sleep(1)
+
     
     syscall_err : int = skel_map_update_elem(
         fd=map_fd,
@@ -176,11 +193,13 @@ def main(lib: Path, symbol: str, btf: Optional[Path]):
     if err != 0:
         die("libbpf.bpf_object__load_skeleton failed")
     
-    for section_name, value in zip(["data.symbol_name", ".data.library_path"], [symbol, str(lib)]):
+    obj_ptr = s_ptr.contents.obj.contents
+    
+    for section_name, value in zip([".data.symbol_name", ".data.library_path"], [symbol, str(lib)]):
         patch_bpf_map(
-            obj=s_ptr.contents.obj,
+            obj_ptr=obj_ptr,
             section_name=section_name,
-            new_value=value,
+            new_value=value, # TODO libbpf.String(bytes(value, "ascii"))
         )
 
     uprobe_opts =libbpf.struct_bpf_uprobe_opts(
@@ -189,15 +208,15 @@ def main(lib: Path, symbol: str, btf: Optional[Path]):
         func_name=libbpf.String(bytes(symbol, "ascii"))
     )
 
-    programs_ptr = s_ptr.contents.obj.contents.contents.programs
+    programs_ptr = obj_ptr.contents.programs
 
     pid_t = ctypes.c_int
     pid_all, pid_self = pid_t(-1), pid_t(0)
 
     bpf_link = libbpf.bpf_program__attach_uprobe_opts(
         programs_ptr,
-        pid_all,                                               # pid=0 (own process)
-        libbpf.String(bytes(str(lib), "ascii")),                    # binary_path
+        pid_all,                                               # pid
+        libbpf.String(bytes(str(lib), "ascii")),               # binary_path
         0,                                                     # func_offset (will be auto-determined anyway)
         ctypes.byref(uprobe_opts),                             # opts
     )
