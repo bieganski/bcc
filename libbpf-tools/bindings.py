@@ -192,7 +192,7 @@ def main(lib: Path, symbol: str, btf: Optional[Path]):
     if btf:
         if not btf.exists():
             raise ValueError(f"Custom BTF path does not exist! {btf}")
-        open_opts = libbpf.bpf_object_open_opts(sz=ctypes.sizeof(libbpf.struct_bpf_object_open_opts), btf_custom_path=libbpf.String(bytes(btf, "ascii")))
+        open_opts = libbpf.bpf_object_open_opts(sz=ctypes.sizeof(libbpf.struct_bpf_object_open_opts), btf_custom_path=libbpf.String(bytes(str(btf), "ascii")))
         open_opts_ptr = ctypes.byref(open_opts)
     else:
         open_opts_ptr = None
