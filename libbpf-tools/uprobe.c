@@ -53,10 +53,35 @@ void patch_bpf_map(struct bpf_object* obj, const char* section_name, void* new_v
 	}
 }
 
+
+static inline struct uprobe_bpf *
+uprobe_bpf__open_and_load_WITH_VMLINUX(char* vmlinux_path)
+{
+	struct uprobe_bpf *obj;
+	int err;
+	struct bpf_object_open_opts *opts = NULL;
+
+	if (vmlinux_path) {
+		opts = calloc(sizeof(struct bpf_object_open_opts), 1);
+		opts->btf_custom_path = vmlinux_path;
+		opts->sz = sizeof(struct bpf_object_open_opts);
+	}
+	obj = uprobe_bpf__open_opts(opts);
+	if (!obj)
+		return NULL;
+	err = uprobe_bpf__load(obj);
+	if (err) {
+		uprobe_bpf__destroy(obj);
+		errno = -err;
+		return NULL;
+	}
+	return obj;
+}
+
 int main(int argc, char **argv)
 {
-	if(argc != 3) {
-        printf("usage: %s <path to ELF> <symbol name>\n", argv[0]);
+	if((argc != 3) && (argc != 4)) {
+        printf("usage: %s <path to ELF> <symbol name> <optional vmlinux path>\n", argv[0]);
         return 1;
     }
 
@@ -67,6 +92,8 @@ int main(int argc, char **argv)
 		exit(1);
 	}
 
+	char* vmlinux_path = (argc == 4) ? argv[3] : NULL;
+
 	struct uprobe_bpf *skel;
 	LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
 
@@ -74,7 +101,7 @@ int main(int argc, char **argv)
 	libbpf_set_print(libbpf_print_fn);
 
 	/* Load and verify BPF application */
-	skel = uprobe_bpf__open_and_load();
+	skel = uprobe_bpf__open_and_load_WITH_VMLINUX(vmlinux_path);
 	
 	if (!skel) {
 		perror("Failed to open and load BPF skeleton");
