@@ -73,7 +73,7 @@ bpf_syscall_nr = {
 def alloc_writable_buf(type: Type[ctypes.Structure]) -> "ctypes._Pointer[ctypes.Structure]":
     size = ctypes.sizeof(type)
     assert size
-    ptr = ctypes.create_string_buffer(init=0, size=size)
+    ptr = ctypes.create_string_buffer(init=bytes(size), size=size)
     return ctypes.cast(ptr, ctypes.POINTER(type))
 
 
