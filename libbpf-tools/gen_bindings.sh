@@ -33,6 +33,7 @@ fi
 # Prerequsistes.
 
 pip3 install --upgrade pip
+pip3 install --upgrade astor
 pip3 install git+https://github.com/bieganski/ctypesgen
 
 rm -rf gen
