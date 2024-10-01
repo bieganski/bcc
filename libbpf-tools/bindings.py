@@ -32,6 +32,19 @@ def run_shell(cmd: str) -> tuple[str, str]:
     return stdout, stderr
 
 def test_struct_packing():
+    """
+    TODO: currently not used, but is very useful for testing ctypesgen.
+
+    sizeof ()
+    {
+        if ! [[ $# -eq 2 ]]; then
+            echo 'usage:  sizeof <elf> <struct name>';
+            return;
+        fi;
+        gdb -q -ex "file $1" -ex "printf \"%d\n\", sizeof(struct $2)" -ex quit | grep --color=auto -v Reading
+    }
+
+    """
     libbpf_path = "./libbpf.so.1" # XXX
     for k, v in libbpf.__dict__.items():
         if k.startswith("struct_") and (("bpf" in k) or ("btf" in k) or ("elf_state" in k)):
@@ -77,10 +90,8 @@ def alloc_writable_buf(type: Type[ctypes.Structure]) -> "ctypes._Pointer[ctypes.
     return ctypes.cast(ptr, ctypes.POINTER(type))
 
 
-def skel_map_update_elem(fd: int, key: ctypes.c_void_p, value: bytes, flags: int):
+def skel_map_update_elem(fd: int, key: int, value: bytes, flags: int):
 
-    print(f"C")
-    
     attr_ptr = alloc_writable_buf(bpf.union_bpf_attr)
 
     def bpf_attr_find_map_manip_ctype() -> tuple[str, type]:
@@ -89,6 +100,7 @@ def skel_map_update_elem(fd: int, key: ctypes.c_void_p, value: bytes, flags: int
                 return (name, type)
         else:
             raise ValueError("suitable ctype needed for bpf_attr not found")
+
     name, ctype = bpf_attr_find_map_manip_ctype()
 
     def offsetofend(instance: ctypes.Structure, field: str):
@@ -96,8 +108,7 @@ def skel_map_update_elem(fd: int, key: ctypes.c_void_p, value: bytes, flags: int
 
     union_variant = getattr(attr_ptr.contents, name)
     
-    # TODO: '@arg key' not used
-    key_storage = ctypes.c_int(0)
+    key_storage = ctypes.c_int(key)
     key_addr : int = ctypes.addressof(key_storage)
     
     union_variant.map_fd = fd
@@ -132,7 +143,7 @@ def patch_bpf_map(
     
     syscall_err : int = skel_map_update_elem(
         fd=map_fd,
-        key=ctypes.byref(ctypes.c_int(0)),
+        key=0,
         value=new_value,
         flags=bpf.BPF_ANY
     )
@@ -188,7 +199,7 @@ def bpf__create_skeleton() -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
     return s_ptr
 
 
-def main(lib: Path, symbol: str, btf: Optional[Path]):
+def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str):
     if btf:
         if not btf.exists():
             raise ValueError(f"Custom BTF path does not exist! {btf}")
@@ -210,44 +221,64 @@ def main(lib: Path, symbol: str, btf: Optional[Path]):
     
     obj_ptr = s_ptr.contents.obj.contents
     
-    for section_name, value in zip([".data.symbol_name", ".data.library_path"], [symbol, str(lib)]):
+    for section_name, value in zip([".data.symbol_name", ".data.library_path"], [symbol_or_offset, str(lib)]):
         patch_bpf_map(
             obj_ptr=obj_ptr,
             section_name=section_name,
             new_value=bytes(value, "ascii") + b'\x00',
         )
 
+    def ctypesgen_String_nullptr_workaround() -> libbpf.String:
+        """
+        TODO: 'ctypesgen' tries to be smart and defines 'class String', that is not convenient for us at all.
+        Otherwise we could just use 'ctypes.POINTER()', and ctypes would convert it to nullptr automatically.
+        """
+        res = libbpf.String()
+        res.raw = ctypes.POINTER(ctypes.c_char)()
+        return res
+
+    try:
+        uprobe_file_offset = int(symbol_or_offset, 16)
+        func_name = ctypesgen_String_nullptr_workaround()
+    except:
+        uprobe_file_offset = 0
+        func_name = libbpf.String(bytes(symbol_or_offset, "ascii"))
+
     uprobe_opts =libbpf.struct_bpf_uprobe_opts(
         sz=ctypes.sizeof(libbpf.struct_bpf_uprobe_opts),
         retprobe=False,
-        func_name=libbpf.String(bytes(symbol, "ascii"))
+        func_name=func_name,
     )
 
-    programs_ptr = obj_ptr.contents.programs
-
     pid_t = ctypes.c_int
-    pid_all, pid_self = pid_t(-1), pid_t(0)
+    if pid == "self":
+        pid_int = pid_t(0)
+    elif pid == "all":
+        pid_int = pid_t(-1)
+    else:
+        pid_int = pid_t(int(pid))
 
+    programs_ptr = obj_ptr.contents.programs
     bpf_link = libbpf.bpf_program__attach_uprobe_opts(
         programs_ptr,
-        pid_all,                                               # pid
+        pid_int,                                               # pid
         libbpf.String(bytes(str(lib), "ascii")),               # binary_path
-        0,                                                     # func_offset (will be auto-determined anyway)
+        uprobe_file_offset,                                    # func_offset (not necessarily will be used)
         ctypes.byref(uprobe_opts),                             # opts
     )
 
-    if bpf_link is None:
+    if not bpf_link:
         raise ValueError("bpf_program__attach_uprobe_opts returned NULL!")
 
     print("Successfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see output of the BPF programs.")
-    time.sleep(99999)
+    time.sleep(999999)
 
-    raise ValueError("OK")
 
 if __name__ == "__main__":
     from argparse import ArgumentParser
-    parser = ArgumentParser(usage="XXX")
-    parser.add_argument("-l", "--lib", type=Path, required=True, help="path to the library to set userspace breakpoint at.")
-    parser.add_argument("-s", "--symbol", type=str, required=True, help="symbol (function) name to set breakpoint at (e.g. 'malloc').")
-    parser.add_argument("-b", "--btf", type=Path, help="custom BTF path. if not specified, the ")
+    parser = ArgumentParser(usage="libbpy python bindings loader")
+    parser.add_argument("lib", type=Path, help="path to the library to set userspace breakpoint at.")
+    parser.add_argument("symbol_or_offset", help="symbol name or hex file offset to set breakpoint at (e.g. 'malloc' or '0x2068').")
+    parser.add_argument("-b", "--btf", type=Path, help="custom BTF path. if not specified, libbpf will seek for 'vmlinux' in default locations (e.g. sysfs)")
+    parser.add_argument("-p", "--pid", default="all", help="PID to be traced. Either an int, or 'self', or 'all'. Defaults to 'all'")
     main(**vars(parser.parse_args()))
