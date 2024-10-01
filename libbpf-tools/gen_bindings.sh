@@ -1,9 +1,9 @@
 #!/bin/bash
 
-set -eux
+set -e
 
 SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
-pushd $SCRIPT_DIR
+pushd $SCRIPT_DIR > /dev/null
 
 usage() {
     echo "Usage: $0 --libbpf-root <path>"
@@ -50,11 +50,10 @@ file -E $BPF_H
 
 popd > /dev/null
 
-ctypesgen -D__signed__=signed $BPF_H -l ./libbpf.so.1 > gen/bpf.py
+ctypesgen -D__signed__=signed $BPF_H -l libbpf.so.1 > gen/bpf.py
 
-# -l ./libbpf.so.1 \
 ctypesgen \
--l ./libbpf.so.1 \
+-l libbpf.so.1 \
 -D__signed__=signed \
 "-D__builtin_constant_p(x)='1'" \
 -I $LIBBPF_ROOT/include/ \
