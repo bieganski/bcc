@@ -10,6 +10,9 @@
 #include <sys/syscall.h>      /* Definition of SYS_* constants */
 #include <unistd.h>
 
+
+
+
 static int libbpf_print_fn(enum libbpf_print_level level, const char *format, va_list args)
 {
 	return vfprintf(stderr, format, args);
@@ -78,24 +81,59 @@ uprobe_bpf__open_and_load_WITH_VMLINUX(char* vmlinux_path)
 	return obj;
 }
 
-int main(int argc, char **argv)
-{
-	if((argc != 3) && (argc != 4)) {
-        printf("usage: %s <path to ELF> <symbol name> <optional vmlinux path>\n", argv[0]);
-        return 1;
-    }
+int all_pid = -1, self_pid = 0;
 
-	char* symbol_name = argv[2];
-	char* elf_path = realpath(argv[1], NULL);
-	if (elf_path == NULL) {
-		perror("elf_path realpath");
-		exit(1);
+char *find_library_path(const char *libname) {
+	char cmd[128];
+	static char path[512];
+	FILE *fp;
+
+	// Construct the ldconfig command with grep
+	snprintf(cmd, sizeof(cmd), "ldconfig -p | grep %s", libname);
+
+	// Execute the command and read the output
+	fp = popen(cmd, "r");
+	if (fp == NULL) {
+		perror("Failed to run ldconfig");
+		return NULL;
 	}
 
-	char* vmlinux_path = (argc == 4) ? argv[3] : NULL;
+	// Read the first line of output which should have the library path
+	if (fgets(path, sizeof(path) - 1, fp) != NULL) {
+		// Extract the path from the ldconfig output
+		char *start = strrchr(path, '>');
+		if (start && *(start + 1) == ' ') {
+			memmove(path, start + 2, strlen(start + 2) + 1);
+			char *end = strchr(path, '\n');
+			if (end) {
+				*end = '\0';  // Null-terminate the path
+			}
+			pclose(fp);
+			return path;
+		}
+	}
+
+	pclose(fp);
+	return NULL;
+}
+
+int main(int argc, char **argv)
+{
+	// if((argc != 3) && (argc != 4)) {
+    //     printf("usage: %s <path to ELF> <symbol name> <optional vmlinux path>\n", argv[0]);
+    //     return 1;
+    // }
+
+	// char* symbol_name = argv[2];
+	// char* elf_path = realpath(argv[1], NULL);
+	// if (elf_path == NULL) {
+	// 	perror("elf_path realpath");
+	// 	exit(1);
+	// }
+
+	char* vmlinux_path = (argc >= 2) ? argv[1] : NULL;
 
 	struct uprobe_bpf *skel;
-	LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
 
 	/* Set up libbpf errors and debug info callback */
 	libbpf_set_print(libbpf_print_fn);
@@ -108,38 +146,48 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	uprobe_opts.func_name = symbol_name;
+	LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
+	uprobe_opts.func_name = "SSL_read";
 	uprobe_opts.retprobe = false;
-	int all_pid = -1, self_pid = 0;
 	
-	int arg_pid = all_pid;
-	int arg_offset = 0; // NOTE: will not be used if 'symbol_name' provided.
+	// char* openssl_path = find_library_path("libssl.so");
+	char* openssl_path = find_library_path("libssl.so.1.1");
+	printf("OpenSSL path: %s\n", openssl_path);
 
-	// NOTE: map names are inherited from BPF ELF file.
-	patch_bpf_map(skel->obj, ".data.symbol_name", symbol_name);
-	patch_bpf_map(skel->obj, ".data.library_path", elf_path);
-	
-	skel->links.uprobe_funcname = bpf_program__attach_uprobe_opts(
-		skel->progs.uprobe_funcname,
-		arg_pid,
-		elf_path,
-		arg_offset,
+	skel->links.probe_SSL_read = bpf_program__attach_uprobe_opts(
+		skel->progs.probe_SSL_read,
+		all_pid,
+		openssl_path,
+		0, // arg_offset, not used
 		&uprobe_opts
 	);
-	if (!skel->links.uprobe_funcname) {
+	if (!skel->links.probe_SSL_read) {
+		perror("Failed to attach uprobe");
+		goto cleanup;
+	}
+
+	uprobe_opts.retprobe =1 ;
+
+
+	skel->links.probe_SSL_read_exit = bpf_program__attach_uprobe_opts(
+		skel->progs.probe_SSL_read_exit,
+		all_pid,
+		openssl_path,
+		0, // arg_offset, not used
+		&uprobe_opts
+	);
+	if (!skel->links.probe_SSL_read_exit) {
 		perror("Failed to attach uprobe");
 		goto cleanup;
 	}
 
 	printf("\nSuccessfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` "
               "to see output of the BPF programs.\n");
-
 	while(1) {
 		sleep(1);
 	}
 
 cleanup:
 	uprobe_bpf__destroy(skel);
-	free(elf_path);
 	return -1;
 }

@@ -17,6 +17,8 @@ if [[ $SKIP_BUILD == "" ]]; then
     ./`basename $EXTERNAL_BUILD_SCRIPT`
     popd > /dev/null
 
+    ln -s $RES_LIBPF || true
+    ln -s `basename $RES_LIBPF` libbpf.so || true
     ./build.sh riscv64
 
 fi
