@@ -39,6 +39,11 @@ BZ_APPS = \
 	opensnoop \
 	#
 
+
+# filetop \
+# ksnoop \
+# mountsnoop \
+
 APPS = \
 	uprobe \
 	bashreadline \
@@ -57,17 +62,14 @@ APPS = \
 	execsnoop \
 	exitsnoop \
 	filelife \
-	filetop \
 	fsdist \
 	fsslower \
 	funclatency \
 	gethostlatency \
 	hardirqs \
 	javagc \
-	ksnoop \
 	llcstat \
 	mdflush \
-	mountsnoop \
 	numamove \
 	oomkill \
 	profile \

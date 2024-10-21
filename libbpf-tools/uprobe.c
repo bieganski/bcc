@@ -119,10 +119,10 @@ char *find_library_path(const char *libname) {
 
 int main(int argc, char **argv)
 {
-	// if((argc != 3) && (argc != 4)) {
-    //     printf("usage: %s <path to ELF> <symbol name> <optional vmlinux path>\n", argv[0]);
-    //     return 1;
-    // }
+	if(argc != 2) {
+        printf("usage: %s <vmlinux path> (try passing /sys/kernel/btf/vmlinux)\n", argv[0]);
+        return 1;
+    }
 
 	// char* symbol_name = argv[2];
 	// char* elf_path = realpath(argv[1], NULL);
@@ -131,7 +131,7 @@ int main(int argc, char **argv)
 	// 	exit(1);
 	// }
 
-	char* vmlinux_path = (argc >= 2) ? argv[1] : NULL;
+	char* vmlinux_path = argv[1];
 
 	struct uprobe_bpf *skel;
 
@@ -147,11 +147,22 @@ int main(int argc, char **argv)
 	}
 
 	LIBBPF_OPTS(bpf_uprobe_opts, uprobe_opts);
-	uprobe_opts.func_name = "SSL_read";
+	
+	// uprobe_opts.func_name = "SSL_read";
+	uprobe_opts.func_name = "malloc";
+	
+	uprobe_opts.func_name = "libbpf_find_kernel_btf";
+	
 	uprobe_opts.retprobe = false;
 	
 	// char* openssl_path = find_library_path("libssl.so");
-	char* openssl_path = find_library_path("libssl.so.1.1");
+
+
+	// char* openssl_path = find_library_path("libssl.so.1.1");
+	// char* openssl_path = find_library_path("libc.so.6");
+	char* openssl_path = find_library_path("libbpf.so.1");
+
+	
 	printf("OpenSSL path: %s\n", openssl_path);
 
 	skel->links.probe_SSL_read = bpf_program__attach_uprobe_opts(
@@ -166,20 +177,20 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
-	uprobe_opts.retprobe =1 ;
+	// uprobe_opts.retprobe =1 ;
 
 
-	skel->links.probe_SSL_read_exit = bpf_program__attach_uprobe_opts(
-		skel->progs.probe_SSL_read_exit,
-		all_pid,
-		openssl_path,
-		0, // arg_offset, not used
-		&uprobe_opts
-	);
-	if (!skel->links.probe_SSL_read_exit) {
-		perror("Failed to attach uprobe");
-		goto cleanup;
-	}
+	// skel->links.probe_SSL_read_exit = bpf_program__attach_uprobe_opts(
+	// 	skel->progs.probe_SSL_read_exit,
+	// 	all_pid,
+	// 	openssl_path,
+	// 	0, // arg_offset, not used
+	// 	&uprobe_opts
+	// );
+	// if (!skel->links.probe_SSL_read_exit) {
+	// 	perror("Failed to attach uprobe");
+	// 	goto cleanup;
+	// }
 
 	printf("\nSuccessfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` "
               "to see output of the BPF programs.\n");

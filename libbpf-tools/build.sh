@@ -21,13 +21,14 @@ if [ "$ARCH" == "armv7l" ]; then
 
 
 LIBS_DIR=./armv7l_libs
+DYN_LOADER=/lib/ld-linux.so.3
 
 if ! [ -d "$LIBS_DIR" ]; then
     mkdir -p $LIBS_DIR
     pushd $LIBS_DIR > /dev/null
     sdb pull /usr/lib/libelf.so.1 .
     sdb pull /lib/libz.so.1 .
-    sdb pull /usr/lib/ld-linux.so.3 .
+    sdb pull $DYN_LOADER .
     ln -s libelf.so.1 libelf.so
     ln -s libz.so.1 libz.so
     popd > /dev/null
@@ -39,13 +40,14 @@ fi
 elif [ "$ARCH" == "riscv64" ]; then
 
 LIBS_DIR=./riscv_libs
+DYN_LOADER=/lib/ld-linux-riscv64-lp64d.so.1
 
 if ! [ -d "$LIBS_DIR" ]; then
     mkdir -p $LIBS_DIR
     pushd $LIBS_DIR > /dev/null
     sdb pull /usr/lib64/libelf.so.1 .
     sdb pull /usr/lib64/libz.so.1 .
-    sdb pull /lib/ld-linux-riscv64-lp64d.so.1 .
+    sdb pull $DYN_LOADER .
     ln -s libelf.so.1 libelf.so
     ln -s libz.so.1 libz.so
     popd > /dev/null
@@ -79,4 +81,4 @@ STATIC= # STATIC="-static -static-libgcc -static-libstdc++"
 
 
 
-EXTRA_CFLAGS="$ARCH_FLAGS " EXTRA_LDFLAGS=" $STATIC -L$LIBS_DIR  -Wl,--export-dynamic,--dynamic-linker=/lib/ld-linux-riscv64-lp64d.so.1" CROSS_COMPILE=$compiler ARCH=$ARCH_TRANSLATED make  # -j12 # --debug=b
+EXTRA_CFLAGS="$ARCH_FLAGS " EXTRA_LDFLAGS=" $STATIC -L$LIBS_DIR  -Wl,--export-dynamic,--dynamic-linker=$DYN_LOADER" CROSS_COMPILE=$compiler ARCH=$ARCH_TRANSLATED make  # -j12 # --debug=b
