@@ -81,7 +81,7 @@ uprobe_bpf__open_and_load_WITH_VMLINUX(char* vmlinux_path)
 int main(int argc, char **argv)
 {
 	if((argc != 3) && (argc != 4)) {
-        printf("usage: %s <path to ELF> <symbol name> <optional vmlinux path>\n", argv[0]);
+        printf("usage: %s <path to ELF> <symbol name or hex offset> <optional vmlinux path>\n", argv[0]);
         return 1;
     }
 
@@ -107,13 +107,19 @@ int main(int argc, char **argv)
 		perror("Failed to open and load BPF skeleton");
 		goto cleanup;
 	}
+	
+	errno = 0;
+	size_t breakpoint_offset = strtol(symbol_name, NULL, 16);
+	if ((errno != 0) || breakpoint_offset == 0) {
+		printf("treating %s as a symbol, not offset.\n", symbol_name);
+		uprobe_opts.func_name = symbol_name;
+	} else {
+		printf("treating %s as an offset, not a symbol.\n", symbol_name);
+	}
 
-	uprobe_opts.func_name = symbol_name;
 	uprobe_opts.retprobe = false;
 	int all_pid = -1, self_pid = 0;
-	
 	int arg_pid = all_pid;
-	int arg_offset = 0; // NOTE: will not be used if 'symbol_name' provided.
 
 	// NOTE: map names are inherited from BPF ELF file.
 	patch_bpf_map(skel->obj, ".data.symbol_name", symbol_name);
@@ -123,7 +129,7 @@ int main(int argc, char **argv)
 		skel->progs.uprobe_funcname,
 		arg_pid,
 		elf_path,
-		arg_offset,
+		breakpoint_offset,
 		&uprobe_opts
 	);
 	if (!skel->links.uprobe_funcname) {
