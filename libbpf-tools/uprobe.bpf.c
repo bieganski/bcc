@@ -14,3 +14,11 @@ int BPF_KPROBE(uprobe_funcname, long long arg1, long long arg2, long long arg3, 
 	bpf_printk("uprobe hit %s:%s from PID %d. args: %llx,%llx,%llx,%llx,%llx,%llx", library_path, symbol_name, pid, arg1, arg2, arg3, arg4, arg5, arg6);
 	return 0;
 }
+
+SEC("uprobe//")
+int BPF_KRETPROBE(ret_uprobe_funcname, unsigned long ret)
+{
+	int pid = bpf_get_current_pid_tgid() >> 32;
+	bpf_printk("retprobe PID %d, ret value: 0x%lx", pid, ret); // PT_REGS_RC(regs)
+	return 0;
+}

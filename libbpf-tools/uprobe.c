@@ -137,6 +137,20 @@ int main(int argc, char **argv)
 		goto cleanup;
 	}
 
+
+	uprobe_opts.retprobe = true;
+	skel->links.ret_uprobe_funcname = bpf_program__attach_uprobe_opts(
+		skel->progs.ret_uprobe_funcname,
+		arg_pid,
+		elf_path,
+		breakpoint_offset,
+		&uprobe_opts
+	);
+	if (!skel->links.ret_uprobe_funcname) {
+		perror("Failed to attach uprobe");
+		goto cleanup;
+	}
+
 	printf("\nSuccessfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` "
               "to see output of the BPF programs.\n");
 
