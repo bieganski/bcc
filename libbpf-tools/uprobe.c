@@ -109,12 +109,17 @@ int main(int argc, char **argv)
 	}
 	
 	errno = 0;
-	size_t breakpoint_offset = strtol(symbol_name, NULL, 16);
-	if ((errno != 0) || breakpoint_offset == 0) {
+	char* bad = NULL;
+	int len = strlen(symbol_name);
+	size_t breakpoint_offset;
+	
+	if (len < 2 || (symbol_name[0] != '0') || (symbol_name[1] != 'x')) {
 		printf("treating %s as a symbol, not offset.\n", symbol_name);
 		uprobe_opts.func_name = symbol_name;
+		breakpoint_offset = 0;
 	} else {
 		printf("treating %s as an offset, not a symbol.\n", symbol_name);
+		breakpoint_offset = strtol(symbol_name, &bad, 16);
 	}
 
 	uprobe_opts.retprobe = false;
