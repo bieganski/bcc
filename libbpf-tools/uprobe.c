@@ -78,6 +78,53 @@ uprobe_bpf__open_and_load_WITH_VMLINUX(char* vmlinux_path)
 	return obj;
 }
 
+// TODO: keep coherent with what ebpf sees :)
+struct event {
+	
+	// those below form userspace dict key
+	char library_path[128];
+	char symbol_name[64];
+	int32_t pid;
+	int32_t tid;
+
+	unsigned long pc;
+	unsigned long ret_addr;
+	unsigned long ret_val;
+
+	unsigned long arg1;
+	unsigned long arg2;
+	unsigned long arg3;
+	unsigned long arg4;
+	unsigned long arg5;
+	unsigned long arg6;
+	
+	bool is_ret;
+	uint64_t timestamp;
+};
+
+
+int handle_event(void *ctx, void *data, size_t data_sz)
+{
+	const struct event *e = data;
+	// struct tm *tm;
+	// char ts[32];
+	// time_t t;
+
+	// time(&t);
+	// tm = localtime(&t);
+	// strftime(ts, sizeof(ts), "%H:%M:%S", tm);
+
+	// printf("%-8s %-5s %-7d %-16s %s\n", ts, "EXEC", e->pid, e->comm, e->filename);
+	printf("%s:%s(%d:%d)", e->library_path, e->symbol_name, e->pid, e->tid);
+	if (!e->is_ret) {
+		printf("entry with args (%lx, %lx, %lx, %lx, %lx, %lx)\n", e->arg1, e->arg2, e->arg3, e->arg4, e->arg5, e->arg6);
+	} else {
+		printf("exit to ra=0x%lx, ret_val=0x%llx\n", e->ret_addr, e->ret_val);
+	}
+
+	return 0;
+}
+
 int main(int argc, char **argv)
 {
 	if((argc != 3) && (argc != 4)) {
@@ -159,8 +206,27 @@ int main(int argc, char **argv)
 	printf("\nSuccessfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` "
               "to see output of the BPF programs.\n");
 
-	while(1) {
-		sleep(1);
+	struct ring_buffer *rb = ring_buffer__new(bpf_map__fd(skel->maps.rb), handle_event, NULL, NULL);
+	if (!rb) {
+		fprintf(stderr, "Failed to create ring buffer\n");
+		return -1;
+	}
+
+	// while(1) {
+	// 	sleep(1);
+	// }
+
+	while (true) {
+		int err = ring_buffer__poll(rb, 100 /* timeout, ms */);
+		/* Ctrl-C will cause -EINTR */
+		if (err == -EINTR) {
+			err = 0;
+			break;
+		}
+		if (err < 0) {
+			printf("Error polling ring buffer: %d\n", err);
+			break;
+		}
 	}
 
 cleanup:
