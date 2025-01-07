@@ -73,8 +73,8 @@ struct event {
 	unsigned long arg5;
 	unsigned long arg6;
 	
-	bool is_ret;
 	uint64_t timestamp;
+	int32_t is_ret;
 };
 // library_path, symbol_name, pid, pc, arg1, arg2, arg3, arg4, arg5, arg6);
 
@@ -101,6 +101,7 @@ static inline void copy_pid_tid(struct pt_regs* regs, struct event* e) {
 SEC("uprobe//")
 int BPF_KPROBE(uprobe_funcname)
 {
+	bpf_printk("is_ret=0");
 	
 	
 	struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
@@ -165,6 +166,7 @@ int BPF_KPROBE(uprobe_funcname)
 SEC("uprobe//")
 int BPF_KRETPROBE(ret_uprobe_funcname) // , struct pt_regs* regs /* , unsigned long ret */)
 {
+	bpf_printk("is_ret=1");
 	struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
 		return 0;

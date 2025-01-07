@@ -83,6 +83,8 @@ bpf_syscall_nr = {
     CPU_Arch.riscv64: 280,
 }
 
+pid_t = ctypes.c_int
+
 def alloc_writable_buf(type: Type[ctypes.Structure]) -> "ctypes._Pointer[ctypes.Structure]":
     size = ctypes.sizeof(type)
     assert size
@@ -167,25 +169,14 @@ def bpf__create_skeleton() -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
     
 
     ################    MAPS
-    s.map_cnt = 1
+    s.map_cnt = 0 # NOTE: set by libbpf later
     s.map_skel_sz = ctypes.sizeof(libbpf.bpf_map_skeleton)
     s.maps = alloc_writable_buf(libbpf.bpf_map_skeleton)
 
-    m = s.maps.contents
-    m.name = libbpf.String(b"uprobe_b.rodata")
-    # TODO - m.mmaped not set, as it looked strange to me.
-    null_ptr = alloc_writable_buf(ctypes.POINTER(libbpf.struct_bpf_map))
-    m.map = null_ptr # TODO: later check if it's non-null (should be set by libbpf)
-
     ################    PROGS
-    s.prog_cnt = 1
+    s.prog_cnt = 0 # NOTE: set by libbpf later
     s.prog_skel_sz = ctypes.sizeof(libbpf.bpf_prog_skeleton)
     s.progs = alloc_writable_buf(libbpf.bpf_prog_skeleton)
-
-    p = s.progs.contents
-    p.name = libbpf.String(b"uprobe_funcname")
-    null_ptr = alloc_writable_buf(ctypes.POINTER(libbpf.bpf_program))
-    p.prog = null_ptr 
 
     bpf_elf = Path("./.output/uprobe.bpf.o")
     assert bpf_elf.is_file()
@@ -197,6 +188,69 @@ def bpf__create_skeleton() -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
     s.data = elf_bytes_wrapped
 
     return s_ptr
+
+# Define the struct event in Python
+class Event(ctypes.Structure):
+    _fields_ = [
+        ("library_path", ctypes.c_char * 128),
+        ("symbol_name", ctypes.c_char * 64),
+        ("pid", ctypes.c_int32),
+        ("tid", ctypes.c_int32),
+
+        ("pc",          ctypes.c_ulong),
+        ("ret_addr",    ctypes.c_ulong),
+        ("ret_val",     ctypes.c_ulong),
+        ("arg1",        ctypes.c_ulong),
+        ("arg2",        ctypes.c_ulong),
+        ("arg3",        ctypes.c_ulong),
+        ("arg4",        ctypes.c_ulong),
+        ("arg5",        ctypes.c_ulong),
+        ("arg6",        ctypes.c_ulong),
+
+        ("timestamp",   ctypes.c_uint64),
+        ("is_ret",      ctypes.c_int32),
+    ]
+
+
+# key: (library, symbol, pid, tid)
+last_entry : dict[tuple[str, str, pid_t, pid_t], Event] = dict()
+
+@ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(None), ctypes.c_size_t)
+def handle_event(ctx, data, data_sz):
+    event_ptr = ctypes.cast(data, ctypes.POINTER(Event))
+    event : Event = event_ptr.contents
+    
+    hash = (event.library_path, event.symbol_name, event.pid, event.tid)
+
+    if event.is_ret:
+        prev_entry = last_entry.get(hash)
+        if not prev_entry:
+            return 0
+
+        exec_time_ns = event.timestamp - prev_entry.timestamp
+        assert exec_time_ns > 0
+        print(f"{event.symbol_name} exec time ns {exec_time_ns}")
+    else:
+        # event is entry
+        prev_entry = last_entry.get(hash)
+        last_entry[hash] = event
+        if not prev_entry:
+            return 0
+
+        reentry_delta_ns = event.timestamp - prev_entry.timestamp
+        print(f"reentry {event.symbol_name} after {reentry_delta_ns} ns")
+
+    return 0
+
+    # print(f"{event.library_path.decode('utf-8')}:{event.symbol_name.decode('utf-8')}({event.pid}:{event.tid})")
+    if not event.is_ret:
+        print(f"entry with args (0x{event.arg1:x}, 0x{event.arg2:x}, 0x{event.arg3:x}, "
+              f"0x{event.arg4:x}, 0x{event.arg5:x}, 0x{event.arg6:x})")
+        pass
+    else:
+        print(f"exit to ra=0x{event.ret_addr:x}, ret_val=0x{event.ret_val:x}")
+
+    return 0
 
 
 def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str):
@@ -250,7 +304,6 @@ def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str):
         func_name=func_name,
     )
 
-    pid_t = ctypes.c_int
     if pid == "self":
         pid_int = pid_t(0)
     elif pid == "all":
@@ -259,16 +312,40 @@ def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str):
         pid_int = pid_t(int(pid))
 
     programs_ptr = obj_ptr.contents.programs
-    bpf_link = libbpf.bpf_program__attach_uprobe_opts(
-        programs_ptr,
-        pid_int,                                               # pid
-        libbpf.String(bytes(str(lib), "ascii")),               # binary_path
-        uprobe_file_offset,                                    # func_offset (not necessarily will be used)
-        ctypes.byref(uprobe_opts),                             # opts
-    )
+    assert (num_progs := obj_ptr.contents.nr_programs) == 2
+    
+    for i in range(num_progs):
+        if "ret_" in programs_ptr[i].name.data.decode("ascii"):
+            uprobe_opts.retprobe = True
+            print(f"prog[{i}] is uretprobe")
+        else:
+            uprobe_opts.retprobe = False
+            print(f"prog[{i}] is not uretprobe")
+        
+        bpf_link = libbpf.bpf_program__attach_uprobe_opts(
+            programs_ptr[i],
+            pid_int,                                               # pid
+            libbpf.String(bytes(str(lib), "ascii")),               # binary_path
+            uprobe_file_offset,                                    # func_offset (not necessarily will be used)
+            ctypes.byref(uprobe_opts),                             # opts
+        )
 
-    if not bpf_link:
-        raise ValueError("bpf_program__attach_uprobe_opts returned NULL!")
+        if not bpf_link:
+            raise ValueError("bpf_program__attach_uprobe_opts returned NULL!")
+
+
+    print("trying RB...")
+    
+    rb_map_fd : int = libbpf.bpf_object__find_map_fd_by_name(obj_ptr, libbpf.String(b"rb"))
+    if rb_map_fd <= 0:
+        raise ValueError(f"patch_bpf_map: lookup failed for map 'rb'")
+    
+    ring_buffer = libbpf.ring_buffer__new(rb_map_fd, handle_event, None, None)
+
+    while True:
+        err = libbpf.ring_buffer__poll(ring_buffer, 100)
+        if err < 0:
+            print("libbpf.ring_buffer__poll BAD")
 
     print("Successfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see output of the BPF programs.")
     time.sleep(999999)

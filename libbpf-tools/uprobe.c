@@ -98,8 +98,8 @@ struct event {
 	unsigned long arg5;
 	unsigned long arg6;
 	
-	bool is_ret;
 	uint64_t timestamp;
+	int32_t is_ret;
 };
 
 
