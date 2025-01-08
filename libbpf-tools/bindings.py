@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 
-from inspect import getmembers
-from pprint import pformat
 from pathlib import Path
 import sys
 import ctypes
 from typing import Type, Optional
 import subprocess
-import time
 import platform
 from enum import Enum
+import signal
+import logging
 
 import gen.libbpf as libbpf
 import gen.bpf as bpf
+
+logging.basicConfig(level=logging.INFO)
 
 libc = ctypes.CDLL(None)
 syscall = libc.syscall
@@ -21,8 +22,6 @@ def die(msg: str = "", exit_code=1, msg_file=sys.stderr):
     if msg:
         print(msg, file=msg_file)
     exit(exit_code)
-
-x = lambda a : pformat(getmembers(a))
 
 def run_shell(cmd: str) -> tuple[str, str]:
     process = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, shell=True, universal_newlines=True, executable="/bin/bash")
@@ -213,7 +212,12 @@ class Event(ctypes.Structure):
 
 
 # key: (library, symbol, pid, tid)
-last_entry : dict[tuple[str, str, pid_t, pid_t], Event] = dict()
+last_entry_event : dict[tuple[str, str, pid_t, pid_t], Event] = dict()
+
+def fmt_ns(timedelta_ns: int) -> str:
+    from datetime import timedelta
+    delta_fmt = timedelta(microseconds=timedelta_ns / 1000)
+    return repr(delta_fmt).removeprefix("datetime.timedelta")
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(None), ctypes.c_size_t)
 def handle_event(ctx, data, data_sz):
@@ -223,37 +227,33 @@ def handle_event(ctx, data, data_sz):
     hash = (event.library_path, event.symbol_name, event.pid, event.tid)
 
     if event.is_ret:
-        prev_entry = last_entry.get(hash)
+        prev_entry = last_entry_event.get(hash)
         if not prev_entry:
-            return 0
+            assert False # uretprobe is set on uprobe hit from the same process, see 'handler_chain' in kernel/events/uprobes.c
 
         exec_time_ns = event.timestamp - prev_entry.timestamp
         assert exec_time_ns > 0
-        print(f"{event.symbol_name} exec time ns {exec_time_ns}")
+
+        # NOTE: possible race condition to stdout, as we don't verify whether the last
+        # line printed comes from the same 'hash' as current 'event'. in practice rarely should happen.
+        print(f" = {event.ret_val}. exec time ns: {fmt_ns(exec_time_ns)}")
     else:
-        # event is entry
-        prev_entry = last_entry.get(hash)
-        last_entry[hash] = event
+        # 'event' is an entry event
+        prev_entry = last_entry_event.get(hash)
+        last_entry_event[hash] = event
+
         if not prev_entry:
-            return 0
+            msg_prefix = f"first entry {event.symbol_name}"
+        else:
+            reentry_delta_ns = event.timestamp - prev_entry.timestamp
+            msg_prefix = f"reentry {event.symbol_name} after {fmt_ns(reentry_delta_ns)}"
 
-        reentry_delta_ns = event.timestamp - prev_entry.timestamp
-        print(f"reentry {event.symbol_name} after {reentry_delta_ns} ns")
-
-    return 0
-
-    # print(f"{event.library_path.decode('utf-8')}:{event.symbol_name.decode('utf-8')}({event.pid}:{event.tid})")
-    if not event.is_ret:
-        print(f"entry with args (0x{event.arg1:x}, 0x{event.arg2:x}, 0x{event.arg3:x}, "
-              f"0x{event.arg4:x}, 0x{event.arg5:x}, 0x{event.arg6:x})")
-        pass
-    else:
-        print(f"exit to ra=0x{event.ret_addr:x}, ret_val=0x{event.ret_val:x}")
-
+        print(f"\n{msg_prefix} (pid={event.pid}), args: (0x{event.arg1:x}, 0x{event.arg2:x}, 0x{event.arg3:x}, "
+              f"0x{event.arg4:x}, 0x{event.arg5:x}, 0x{event.arg6:x})", end="")
     return 0
 
 
-def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str):
+def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str, no_retprobe: bool):
     if btf:
         if not btf.exists():
             raise ValueError(f"Custom BTF path does not exist! {btf}")
@@ -317,10 +317,14 @@ def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str):
     for i in range(num_progs):
         if "ret_" in programs_ptr[i].name.data.decode("ascii"):
             uprobe_opts.retprobe = True
-            print(f"prog[{i}] is uretprobe")
+            logging.info(f"prog[{i}] is uretprobe")
+
+            if no_retprobe:
+                logging.info("skipping uretprobe application (on user request)")
+                continue
         else:
             uprobe_opts.retprobe = False
-            print(f"prog[{i}] is not uretprobe")
+            logging.info(f"prog[{i}] is not uretprobe")
         
         bpf_link = libbpf.bpf_program__attach_uprobe_opts(
             programs_ptr[i],
@@ -332,9 +336,6 @@ def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str):
 
         if not bpf_link:
             raise ValueError("bpf_program__attach_uprobe_opts returned NULL!")
-
-
-    print("trying RB...")
     
     rb_map_fd : int = libbpf.bpf_object__find_map_fd_by_name(obj_ptr, libbpf.String(b"rb"))
     if rb_map_fd <= 0:
@@ -342,20 +343,26 @@ def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str):
     
     ring_buffer = libbpf.ring_buffer__new(rb_map_fd, handle_event, None, None)
 
+    logging.info("Successfully loaded BPF programs! Start ringbuf polling..")
+
     while True:
         err = libbpf.ring_buffer__poll(ring_buffer, 100)
         if err < 0:
             print("libbpf.ring_buffer__poll BAD")
 
-    print("Successfully started! Please run `sudo cat /sys/kernel/debug/tracing/trace_pipe` to see output of the BPF programs.")
-    time.sleep(999999)
-
-
 if __name__ == "__main__":
+    # clean handling of Ctrl-C, as ringbuf polling messes with it.
+    def sig_handler(signum, frame):
+        exit(1)
+
+    signal.signal(signal.SIGINT, sig_handler)
+    signal.signal(signal.SIGTERM, sig_handler)
+
     from argparse import ArgumentParser
     parser = ArgumentParser(usage="libbpy python bindings loader")
     parser.add_argument("lib", type=Path, help="path to the library to set userspace breakpoint at.")
     parser.add_argument("symbol_or_offset", help="symbol name or hex file offset to set breakpoint at (e.g. 'malloc' or '0x2068').")
     parser.add_argument("-b", "--btf", type=Path, help="custom BTF path. if not specified, libbpf will seek for 'vmlinux' in default locations (e.g. sysfs)")
     parser.add_argument("-p", "--pid", default="all", help="PID to be traced. Either an int, or 'self', or 'all'. Defaults to 'all'")
+    parser.add_argument("-nr", "--no-retprobe", action="store_true")
     main(**vars(parser.parse_args()))
