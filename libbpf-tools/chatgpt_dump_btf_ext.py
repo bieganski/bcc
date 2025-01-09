@@ -2,6 +2,7 @@
 
 import sys
 import ctypes
+import io
 
 from inspect import getmembers
 from pprint import pformat
@@ -108,8 +109,7 @@ def main():
 
         if header.core_relo_len == 0:
             raise ValueError("TODO no relocations (core_relo_len == 0)")
-        
-        import io
+
         stream = io.BytesIO(initial_bytes=content_after_header)
         stream.seek(header.core_relo_off)
 
@@ -136,10 +136,23 @@ def main():
                 access_str = btf_str_data[access_str_off:].split(b"\0")[0]
                 print(f"{access_str}, type_id={hex(record.type_id)}, kind={workaround_enum_bpf_core_relo_kind(record.kind).name}")
 
-            # TODO: leave it for convenience for now, as we deal with 'len(struct_bpf_core_relo_instances) == 1' case.
-            # del cur_lst
+        # TODO: leave it for convenience for now, as we deal with 'len(struct_bpf_core_relo_instances) == 1' case.
+        # del cur_lst
+
+        del stream
         
-        libbpf.struct_btf_type
+        stream = io.BytesIO(initial_bytes=btf_type_data)
+
+        type_record_size = ctypes.sizeof(libbpf.struct_btf_type)
+        type_records : list[libbpf.struct_btf_type] = []
+
+        while (type_record_size == len( record := stream.read(type_record_size))):
+            record = libbpf.struct_btf_type.from_buffer_copy(record)
+            type_records.append(record)
+            print(x(record))
+        
+        print("OK")
+        
         
 
 if __name__ == "__main__":
