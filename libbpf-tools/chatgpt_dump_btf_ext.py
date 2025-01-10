@@ -103,6 +103,12 @@ class BtfTypeInfo:
     kind_flag: bool
 
 
+class FileOffsetBytesIO(io.BytesIO):
+    def __init__(self, file_offset: int, initial_bytes = b""):
+        self.file_offset = file_offset
+        super().__init__(initial_bytes)
+del io
+
 def get_null_terminated_str(data: bytes, first_byte_offset: int) -> str:
     return data[first_byte_offset:].split(b"\0")[0].decode("ascii")
 
@@ -140,11 +146,11 @@ def main():
         btf_str_data = btf_section_data[btf_hdr_len + btf_hdr.str_off:][:btf_hdr.str_len]
         btf_type_data = btf_section_data[btf_hdr_len + btf_hdr.type_off:][:btf_hdr.type_len]
 
-        offset = btf_ext_section.header['sh_offset']
-        size = btf_ext_section.header['sh_size']
+        # offset = btf_ext_section.header['sh_offset']
+        # size = btf_ext_section.header['sh_size']
 
-        print(f"File offset: {offset}")
-        print(f"Size in bytes: {size}")
+        # print(f"File offset: {offset}")
+        # print(f"Size in bytes: {size}")
 
         content_full = btf_ext_section.data()
 
@@ -159,7 +165,7 @@ def main():
         if header.core_relo_len == 0:
             raise ValueError("TODO no relocations (core_relo_len == 0)")
 
-        stream = io.BytesIO(initial_bytes=content_after_header)
+        stream = FileOffsetBytesIO(file_offset=(btf_ext_section.header['sh_offset'] + ctypes_sizeof_header), initial_bytes=content_after_header)
         stream.seek(header.core_relo_off)
 
         # reference: https://docs.kernel.org/bpf/btf.html#btf-ext-section
@@ -189,7 +195,7 @@ def main():
 
         del stream
         
-        stream = io.BytesIO(initial_bytes=btf_type_data)
+        stream = FileOffsetBytesIO(file_offset=..., initial_bytes=btf_type_data)
 
         type_record_size = ctypes.sizeof(libbpf.struct_btf_type)
         type_records : list[libbpf.struct_btf_type] = []
@@ -212,7 +218,7 @@ def main():
                 kind_flag = (ctypes.c_int32(u32).value < 0), # test msb
             )
 
-        def consume_metadata_following_type(stream: io.BytesIO, btf_type_instance: libbpf.struct_btf_type):
+        def consume_metadata_following_type(stream: FileOffsetBytesIO, btf_type_instance: libbpf.struct_btf_type):
             assert isinstance(btf_type_instance, libbpf.struct_btf_type)
             """
             From docs: 'For certain kinds, the common data are followed by kind-specific data.'
