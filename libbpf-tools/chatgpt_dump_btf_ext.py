@@ -3,6 +3,7 @@
 import sys
 import ctypes
 import io
+from dataclasses import dataclass
 
 from inspect import getmembers
 from pprint import pformat
@@ -26,13 +27,32 @@ my_btf_ext_info_sec._fields_ = [
 # but for some reason it's not there - define it here for now.
 class workaround_struct_btf_header(ctypes.Structure):
     pass
-
 workaround_struct_btf_header.__slots__ = ['magic', 'version', 'flags', 'hdr_len',
     'type_off', 'type_len', 'str_off', 'str_len']
-
 workaround_struct_btf_header._fields_ = [('magic', ctypes.c_uint16), ('version', ctypes.c_uint8), (
     'flags', ctypes.c_uint8), ('hdr_len', ctypes.c_uint32),
     ('type_off', ctypes.c_uint32), ('type_len', ctypes.c_uint32), ('str_off', ctypes.c_uint32), ('str_len', ctypes.c_uint32)]
+
+
+class workaround_struct_btf_enum(ctypes.Structure):
+    pass
+workaround_struct_btf_enum.__slots__ = ['name_off', 'val']
+workaround_struct_btf_enum._fields_ = [('name_off', ctypes.c_uint32), ('val', ctypes.c_int32)]
+
+class workaround_struct_btf_decl_tag(ctypes.Structure):
+    pass
+workaround_struct_btf_decl_tag.__slots__ = ['component_idx']
+workaround_struct_btf_decl_tag._fields_ = [('component_idx', ctypes.c_uint32)]
+
+
+class workaround_struct_btf_enum64(ctypes.Structure):
+    pass
+workaround_struct_btf_enum64.__slots__ = ['name_off', 'val_lo32', 'val_hi32']
+workaround_struct_btf_enum64._fields_ = [
+    ('name_off', ctypes.c_uint32),
+    ('val_lo32', ctypes.c_uint32),
+    ('val_hi32', ctypes.c_uint32),
+]
 
 
 # NOTE: following is a workaround for missing 'enum' type in 'ctypes' package.
@@ -52,6 +72,35 @@ class workaround_enum_bpf_core_relo_kind(IntEnum):
        BPF_CORE_ENUMVAL_EXISTS    = 10 #  enum value existence in target kernel
        BPF_CORE_ENUMVAL_VALUE     = 11 #  enum value integer value
        BPF_CORE_TYPE_MATCHES      = 12 #  type match in target kernel
+
+
+class BtfKind(IntEnum):
+    BTF_KIND_INT = 1 #       /* Integer      */
+    BTF_KIND_PTR = 2 #       /* Pointer      */
+    BTF_KIND_ARRAY = 3 #       /* Array        */
+    BTF_KIND_STRUCT = 4 #       /* Struct       */
+    BTF_KIND_UNION = 5 #       /* Union        */
+    BTF_KIND_ENUM = 6 #       /* Enumeration up to 32-bit values */
+    BTF_KIND_FWD = 7 #       /* Forward      */
+    BTF_KIND_TYPEDEF = 8 #       /* Typedef      */
+    BTF_KIND_VOLATILE = 9 #       /* Volatile     */
+    BTF_KIND_CONST = 10 #      /* Const        */
+    BTF_KIND_RESTRICT = 11 #      /* Restrict     */
+    BTF_KIND_FUNC = 12 #      /* Function     */
+    BTF_KIND_FUNC_PROTO = 13 #      /* Function Proto       */
+    BTF_KIND_VAR = 14 #      /* Variable     */
+    BTF_KIND_DATASEC = 15 #      /* Section      */
+    BTF_KIND_FLOAT = 16 #      /* Floating point       */
+    BTF_KIND_DECL_TAG = 17 #      /* Decl Tag     */
+    BTF_KIND_TYPE_TAG = 18 #      /* Type Tag     */
+    BTF_KIND_ENUM64 = 19 #      /* Enumeration up to 64-bit values */
+
+
+@dataclass
+class BtfTypeInfo:
+    vlen: int
+    kind: BtfKind
+    kind_flag: bool
 
 
 def get_null_terminated_str(data: bytes, first_byte_offset: int) -> str:
@@ -132,8 +181,7 @@ def main():
             for _ in range(sec_info_partial.num_info):
                 record = libbpf.struct_bpf_core_relo.from_buffer_copy(stream.read(core_relo_rec_size))
                 cur_lst.append(record)
-                access_str_off = record.access_str_off
-                access_str = btf_str_data[access_str_off:].split(b"\0")[0]
+                access_str = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.access_str_off)
                 print(f"{access_str}, type_id={hex(record.type_id)}, kind={workaround_enum_bpf_core_relo_kind(record.kind).name}")
 
         # TODO: leave it for convenience for now, as we deal with 'len(struct_bpf_core_relo_instances) == 1' case.
@@ -146,15 +194,92 @@ def main():
         type_record_size = ctypes.sizeof(libbpf.struct_btf_type)
         type_records : list[libbpf.struct_btf_type] = []
 
-        while (type_record_size == len( record := stream.read(type_record_size))):
+        def btf_type_decode_info_field(instance: libbpf.struct_btf_type) -> BtfTypeInfo:
+            """
+            /* "info" bits arrangement
+            * bits  0-15: vlen (e.g. # of struct's members)
+            * bits 16-23: unused
+            * bits 24-28: kind (e.g. int, ptr, array...etc)
+            * bits 29-30: unused
+            * bit     31: kind_flag, currently used by
+            *             struct, union, fwd, enum and enum64.
+            */
+            """
+            u32 = instance.info
+            return BtfTypeInfo(
+                vlen = u32 & 0xffff,
+                kind = BtfKind((u32 >> 24) & 0xf),
+                kind_flag = (ctypes.c_int32(u32).value < 0), # test msb
+            )
+
+        def consume_metadata_following_type(stream: io.BytesIO, btf_type_instance: libbpf.struct_btf_type):
+            assert isinstance(btf_type_instance, libbpf.struct_btf_type)
+            """
+            From docs: 'For certain kinds, the common data are followed by kind-specific data.'
+            See https://docs.kernel.org/bpf/btf.html#btf-ext-section for more details.
+            """
+            info = btf_type_decode_info_field(instance=btf_type_instance)
+            kind = info.kind
+            if kind == BtfKind.BTF_KIND_INT:
+                # btf_type is followed by a u32 with the following bits arrangement:
+                stream.read(4)
+            elif kind == BtfKind.BTF_KIND_PTR:
+                # No additional type data follow btf_type.
+                pass
+            elif kind == BtfKind.BTF_KIND_ARRAY:
+                # btf_type is followed by one struct btf_array:
+                stream.read(ctypes.sizeof(libbpf.struct_btf_array))
+            elif kind == BtfKind.BTF_KIND_STRUCT:
+                # btf_type is followed by info.vlen number of struct btf_member.:
+                sizeof_member =ctypes.sizeof(libbpf.struct_btf_member)
+                members = [libbpf.struct_btf_member.from_buffer_copy(stream.read(sizeof_member)) for _ in range(info.vlen)]
+                print(f"num_members: {len(members)}")
+                for x in members:
+                    print(get_null_terminated_str(data=btf_str_data, first_byte_offset=x.name_off))
+                # stream.read(ctypes.sizeof(libbpf.struct_btf_member) * info.vlen)
+            elif kind == BtfKind.BTF_KIND_UNION:
+                # btf_type is followed by info.vlen number of struct btf_member.:
+                stream.read(ctypes.sizeof(libbpf.struct_btf_member) * info.vlen)
+            elif kind == BtfKind.BTF_KIND_ENUM:
+                # btf_type is followed by info.vlen number of struct btf_enum.:
+                stream.read(ctypes.sizeof(workaround_struct_btf_enum) * info.vlen)
+            elif kind in [BtfKind.BTF_KIND_FWD, BtfKind.BTF_KIND_TYPEDEF, BtfKind.BTF_KIND_VOLATILE, BtfKind.BTF_KIND_CONST, BtfKind.BTF_KIND_RESTRICT, BtfKind.BTF_KIND_FUNC]:
+                # No additional type data follow btf_type.
+                pass
+            elif kind == BtfKind.BTF_KIND_FUNC_PROTO:
+                # btf_type is followed by info.vlen number of struct btf_param.:
+                stream.read(ctypes.sizeof(libbpf.struct_btf_param) * info.vlen)
+            elif kind == BtfKind.BTF_KIND_VAR:
+                # btf_type is followed by a single struct btf_variable with the following data:
+                stream.read(ctypes.sizeof(libbpf.struct_btf_var))
+            elif kind == BtfKind.BTF_KIND_DATASEC:
+                # btf_type is followed by info.vlen number of struct btf_var_secinfo.:
+                stream.read(ctypes.sizeof(libbpf.struct_btf_var_secinfo) * info.vlen)
+            elif kind == BtfKind.BTF_KIND_FLOAT:
+                # No additional type data follow btf_type.
+                pass
+            elif kind == BtfKind.BTF_KIND_DECL_TAG:
+                # btf_type is followed by struct btf_decl_tag.:
+                stream.read(ctypes.sizeof(workaround_struct_btf_decl_tag))
+            elif kind == BtfKind.BTF_KIND_TYPE_TAG:
+                raise NotImplementedError("TODO, as docs is not clear whether sth should be consumed")
+            elif kind == BtfKind.BTF_KIND_ENUM64:
+                # btf_type is followed by info.vlen number of struct btf_enum64.:
+                stream.read(ctypes.sizeof(workaround_struct_btf_enum64) * info.vlen)
+            else:
+                assert False
+
+        i = 0
+        while (len(record := stream.read(type_record_size)) == type_record_size):
+            i += 1
             record = libbpf.struct_btf_type.from_buffer_copy(record)
             type_records.append(record)
-            print(x(record))
+            consume_metadata_following_type(stream=stream, btf_type_instance=record)
+            print(i, ":", hex(record.name_off), ":", get_null_terminated_str(data=btf_str_data, first_byte_offset=record.name_off))
         
-        print("OK")
+        print(f"OK: {len(type_records)}")
         
         
 
 if __name__ == "__main__":
     main()
-
