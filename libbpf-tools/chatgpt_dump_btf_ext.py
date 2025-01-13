@@ -4,7 +4,7 @@ import sys
 import ctypes
 import io
 from dataclasses import dataclass
-from enum import IntEnum
+from enum import IntEnum, Enum, auto
 
 from inspect import getmembers
 from pprint import pformat
@@ -124,7 +124,15 @@ def get_section_assert_exists(elffile: ELFFile, name: str) -> Section:
         raise ValueError(f"Section '{name}' not found in the ELF file.")
     return section
 
+class PatchExample(Enum):
+    btf_offset_part_of_type_table_and_whole_str_table = auto()  # only tested on x86_64
+
+# patch_example = None
+patch_example = PatchExample.btf_offset_part_of_type_table_and_whole_str_table
+
 def main(elf_path: str):
+
+    global patch_example
 
     with open(elf_path, 'rb') as f:
         elffile = ELFFile(f)
@@ -143,10 +151,16 @@ def main(elf_path: str):
         btf_hdr_len = btf_hdr.hdr_len
         assert btf_hdr_len == ctypes.sizeof(workaround_struct_btf_header)
 
+        if patch_example == PatchExample.btf_offset_part_of_type_table_and_whole_str_table:
+            yield VerifyContext(offset=btf_section_offset, reference=bytes(btf_hdr))
+            yield WriteContext(bytes_to_write=bytes(ctypes.c_uint32(btf_hdr.str_off - 12)), offset=btf_section_offset + workaround_struct_btf_header.str_off.offset)
+            yield WriteContext(bytes_to_write=bytes(ctypes.c_uint32(btf_hdr.type_len - 12)), offset=btf_section_offset + workaround_struct_btf_header.type_len.offset)
+
         # probably that assert is not necessary for our relocation editor, TODO revisit
         assert btf_hdr.str_off > btf_hdr.type_off
 
         btf_str_data = btf_section_data[btf_hdr_len + btf_hdr.str_off:][:btf_hdr.str_len]
+        # raise ValueError(x(btf_hdr))
 
         btf_type_offset_within_btf_section = btf_hdr_len + btf_hdr.type_off
         btf_type_data = btf_section_data[btf_type_offset_within_btf_section:][:btf_hdr.type_len]
@@ -187,10 +201,6 @@ def main(elf_path: str):
                 cur_lst.append(record)
                 access_str = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.access_str_off)
                 print(f"{access_str}, type_id={hex(record.type_id)}, kind={workaround_enum_bpf_core_relo_kind(record.kind).name}", file=sys.stderr)
-                # if record.type_id == 10:
-                #     offset = record_file_offset + libbpf.struct_bpf_core_relo.type_id.offset
-                #     yield VerifyContext(offset=offset, reference=bytes(ctypes.c_uint32(0xa)))
-                #     yield WriteContext(offset=offset, bytes_to_write=bytes(ctypes.c_uint32(0xb)))
 
         # TODO: leave it for convenience for now, as we deal with 'len(struct_bpf_core_relo_instances) == 1' case.
         # del cur_lst
@@ -287,10 +297,18 @@ def main(elf_path: str):
             type_name = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.name_off)
             print(f"[file_offset={hex(record_file_offset)}][i={i}] {hex(record.name_off)}:", type_name, bytes(record), file=sys.stderr)
 
-            if type_name == "pt_regs":
-                # assert previous has no metadata consumed (is of size type_record_size)
-                # yield ShiftRangeLeftContext(r_min_incl=record_file_offset, r_max_excl=stream.tell_absolute(), num=type_record_size)
-                pass
+            info = btf_type_decode_info_field(instance=record)
+            vlen = info.vlen
+            kind = info.kind
+            if patch_example == PatchExample.btf_offset_part_of_type_table_and_whole_str_table:
+                if kind == BtfKind.BTF_KIND_STRUCT and vlen > 10:
+                    assert type_name == "pt_regs"
+                    start_off = stream.tell_absolute()
+                    end_off = btf_section_offset + ctypes.sizeof(btf_hdr) + btf_hdr.str_off + btf_hdr.str_len
+                    yield ShiftRangeLeftContext(r_min_incl=start_off, r_max_excl=end_off, num=ctypes.sizeof(libbpf.struct_btf_member))
+                    vlen_offset = record_file_offset + libbpf.struct_btf_type.info.offset  # 2 lowest bytes, see 'btf_type_decode_info_field'
+                    yield VerifyContext(offset=vlen_offset, reference=bytes(ctypes.c_uint16(info.vlen)))
+                    yield WriteContext(bytes_to_write=bytes(ctypes.c_uint16(info.vlen - 1)), offset=vlen_offset)
         
         print(f"OK: {len(type_records)}", file=sys.stderr)
 

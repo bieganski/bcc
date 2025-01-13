@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 import logging
-from typing import Optional
 
 logging.basicConfig(level=logging.INFO)
 
@@ -65,15 +64,23 @@ def op_shift_range_left(*, input_data: bytes, context: ShiftRangeLeftContext) ->
     return data
 
 def op_write_bytes(*, input_data: bytes, context: WriteContext) -> bytes:
-    data = bytearray(input_data)
+    """
+    we allow for out-of-bounds write. the gap will be filled with zeros.
+    """
+    off   = context.offset
+    patch = context.bytes_to_write
 
-    if context.offset < 0:
+    if off < 0:
         raise ValueError(f"Invalid offset: offset ({context.offset}) must be non-negative.")
-    if context.offset + len(context.bytes_to_write) > len(data):
-        raise ValueError(f"Invalid bytes: writing {len(context.bytes_to_write)} bytes at offset ({context.offset}) exceeds file bounds ({len(data)} bytes).")
 
-    data[context.offset:context.offset + len(context.bytes_to_write)] = context.bytes_to_write
-    return data
+    new_size = max(len(input_data), off + len(patch))
+
+    res = bytearray(new_size)
+
+    res[:len(input_data)] = input_data
+    res[off:off + len(patch)] = patch
+
+    return bytes(res)
 
 def op_read_bytes(*, input_data: bytes, context: ReadContext) -> None:
     if context.offset < 0 or context.offset + context.size > len(input_data):
@@ -89,9 +96,9 @@ def op_verify_bytes(*, input_data: bytes, context: VerifyContext) -> None:
 
     actual_data = input_data[context.offset:context.offset + len(context.reference)]
     if actual_data != context.reference:
-        fmt_act = actual_data[:8]
-        fmt_ref = context.reference[:8]
-        raise ValueError(f"Verification failed at offset {hex(context.offset)}: got {fmt_act.hex()} vs expected {fmt_ref.hex()}")
+        fmt_act = actual_data[:8].hex()
+        fmt_ref = context.reference[:8].hex()
+        raise ValueError(f"Verification failed at offset {hex(context.offset)}: got {fmt_act} vs expected {fmt_ref}")
     return input_data
 
 def main_shift_range_left(args: argparse.Namespace) -> bytes:
