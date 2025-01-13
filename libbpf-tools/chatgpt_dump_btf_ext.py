@@ -4,6 +4,7 @@ import sys
 import ctypes
 import io
 from dataclasses import dataclass
+from enum import IntEnum
 
 from inspect import getmembers
 from pprint import pformat
@@ -13,6 +14,8 @@ x = lambda _a: pformat(getmembers(_a))
 from elftools.elf.elffile import ELFFile, Section
 from gen import bpf
 from gen import libbpf
+
+from chatgpt_byte_range_swap import *
 
 # NOTE: workaround for ctypesgen, that does not understand flexible struct members
 class my_btf_ext_info_sec(ctypes.Structure):
@@ -56,7 +59,6 @@ workaround_struct_btf_enum64._fields_ = [
 
 
 # NOTE: following is a workaround for missing 'enum' type in 'ctypes' package.
-from enum import IntEnum
 
 class workaround_enum_bpf_core_relo_kind(IntEnum):
        BPF_CORE_FIELD_BYTE_OFFSET = 0 # * field byte offset
@@ -116,29 +118,19 @@ del io  # use 'FileOffsetBytesIO', not 'BytesIO'.
 def get_null_terminated_str(data: bytes, first_byte_offset: int) -> str:
     return data[first_byte_offset:].split(b"\0")[0].decode("ascii")
 
-def main():
-    # Ensure a single CLI parameter is provided
-    if len(sys.argv) != 2:
-        print("Usage: python script.py <path-to-elf-file>")
-        sys.exit(1)
+def get_section_assert_exists(elffile: ELFFile, name: str) -> Section:
+    section = elffile.get_section_by_name(name)
+    if section is None:
+        raise ValueError(f"Section '{name}' not found in the ELF file.")
+    return section
 
-    elf_path = sys.argv[1]
-
-
-    def get_section_assert_exists(name: str) -> Section:
-        section = elffile.get_section_by_name(name)
-        if section is None:
-            raise ValueError(f"Section '{name}' not found in the ELF file.")
-        return section
-
-    print(f"\n--- {elf_path} ---")
-
+def main(elf_path: str):
 
     with open(elf_path, 'rb') as f:
         elffile = ELFFile(f)
 
-        btf_section = get_section_assert_exists(".BTF")
-        btf_ext_section = get_section_assert_exists(".BTF.ext")
+        btf_section = get_section_assert_exists(elffile, ".BTF")
+        btf_ext_section = get_section_assert_exists(elffile, ".BTF.ext")
 
         btf_section_offset     = btf_section.header['sh_offset']
         btf_ext_section_offset = btf_ext_section.header['sh_offset']
@@ -186,14 +178,19 @@ def main():
         while len(sec_info_partial_header_bytes := stream.read(sec_info_sizeof_partial)):
             sec_info_partial = my_btf_ext_info_sec.from_buffer_copy(sec_info_partial_header_bytes)
             corresponding_section_name = get_null_terminated_str(data=btf_str_data, first_byte_offset=sec_info_partial.sec_name_off)
-            print(f"[{corresponding_section_name}] num records: {sec_info_partial.num_info}")
+            print(f"[{corresponding_section_name}] num records: {sec_info_partial.num_info}", file=sys.stderr)
             
             struct_bpf_core_relo_instances[corresponding_section_name] = cur_lst = []
-            for _ in range(sec_info_partial.num_info):
+            for i in range(sec_info_partial.num_info):
+                record_file_offset = stream.tell_absolute()
                 record = libbpf.struct_bpf_core_relo.from_buffer_copy(stream.read(core_relo_rec_size))
                 cur_lst.append(record)
                 access_str = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.access_str_off)
-                print(f"{access_str}, type_id={hex(record.type_id)}, kind={workaround_enum_bpf_core_relo_kind(record.kind).name}")
+                print(f"{access_str}, type_id={hex(record.type_id)}, kind={workaround_enum_bpf_core_relo_kind(record.kind).name}", file=sys.stderr)
+                # if record.type_id == 10:
+                #     offset = record_file_offset + libbpf.struct_bpf_core_relo.type_id.offset
+                #     yield VerifyContext(offset=offset, reference=bytes(ctypes.c_uint32(0xa)))
+                #     yield WriteContext(offset=offset, bytes_to_write=bytes(ctypes.c_uint32(0xb)))
 
         # TODO: leave it for convenience for now, as we deal with 'len(struct_bpf_core_relo_instances) == 1' case.
         # del cur_lst
@@ -243,10 +240,10 @@ def main():
             elif kind == BtfKind.BTF_KIND_STRUCT:
                 # btf_type is followed by info.vlen number of struct btf_member.:
                 sizeof_member =ctypes.sizeof(libbpf.struct_btf_member)
-                print(f"struct num members: {info.vlen}")
+                print(f"struct num members: {info.vlen}", file=sys.stderr)
                 members = [libbpf.struct_btf_member.from_buffer_copy(stream.read(sizeof_member)) for _ in range(info.vlen)]
                 for x in members:
-                    print(get_null_terminated_str(data=btf_str_data, first_byte_offset=x.name_off))
+                    print(get_null_terminated_str(data=btf_str_data, first_byte_offset=x.name_off), file=sys.stderr)
                 # stream.read(ctypes.sizeof(libbpf.struct_btf_member) * info.vlen)
             elif kind == BtfKind.BTF_KIND_UNION:
                 # btf_type is followed by info.vlen number of struct btf_member.:
@@ -288,11 +285,29 @@ def main():
             type_records.append(record)
             consume_metadata_following_btf_type(stream=stream, btf_type_instance=record)
             type_name = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.name_off)
-            print(f"[file_offset={hex(record_file_offset)}][i={i}] {hex(record.name_off)}:", type_name, bytes(record))
+            print(f"[file_offset={hex(record_file_offset)}][i={i}] {hex(record.name_off)}:", type_name, bytes(record), file=sys.stderr)
+
+            if type_name == "pt_regs":
+                # assert previous has no metadata consumed (is of size type_record_size)
+                # yield ShiftRangeLeftContext(r_min_incl=record_file_offset, r_max_excl=stream.tell_absolute(), num=type_record_size)
+                pass
         
-        print(f"OK: {len(type_records)}")
-        
+        print(f"OK: {len(type_records)}", file=sys.stderr)
+
+        return [] # XXX active in case of nothing was yield
         
 
+def top(elf_path):
+    lst = [x for x in main(elf_path)]
+    for x in lst:
+        print(x.to_csv())
+
 if __name__ == "__main__":
-    main()
+    # Ensure a single CLI parameter is provided
+    if len(sys.argv) != 2:
+        print("Usage: python script.py <path-to-elf-file>")
+        sys.exit(1)
+
+    elf_path = sys.argv[1]
+
+    top(elf_path)
