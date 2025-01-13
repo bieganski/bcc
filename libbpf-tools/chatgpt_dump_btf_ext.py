@@ -124,11 +124,34 @@ def get_section_assert_exists(elffile: ELFFile, name: str) -> Section:
         raise ValueError(f"Section '{name}' not found in the ELF file.")
     return section
 
+
 class PatchExample(Enum):
     btf_offset_part_of_type_table_and_whole_str_table = auto()  # only tested on x86_64
+    elf_recreate_btf_section = auto()
 
 # patch_example = None
-patch_example = PatchExample.btf_offset_part_of_type_table_and_whole_str_table
+patch_example = PatchExample.elf_recreate_btf_section
+
+
+# TODO: there exists 'elffile.structs.Elf_Shdr' thing in pyelftools, but I couldn't figure out how to reuse it.
+Elf64_Addr = ctypes.c_uint64
+Elf64_Off = ctypes.c_uint64
+Elf64_Word = ctypes.c_uint32
+Elf64_Xword = ctypes.c_uint64
+
+class Elf64_Shdr(ctypes.Structure):
+    _fields_ = [
+        ("sh_name", Elf64_Word),
+        ("sh_type", Elf64_Word),
+        ("sh_flags", Elf64_Xword),
+        ("sh_addr", Elf64_Addr),
+        ("sh_offset", Elf64_Off),
+        ("sh_size", Elf64_Xword),
+        ("sh_link", Elf64_Word),
+        ("sh_info", Elf64_Word),
+        ("sh_addralign", Elf64_Xword),
+        ("sh_entsize", Elf64_Xword),
+    ]
 
 def main(elf_path: str):
 
@@ -146,6 +169,24 @@ def main(elf_path: str):
 
         btf_section_data     = btf_section.data()
         btf_ext_section_data = btf_ext_section.data()
+
+        if patch_example == PatchExample.elf_recreate_btf_section:
+            elf_size = Path(elf_path).stat().st_size
+            new_btf_offset = (elf_size + 0x1000) & (~0xfff)
+
+            # copy .BTF content to the end of file (plus some alignment)
+            yield WriteContext(offset=new_btf_offset, bytes_to_write=btf_section_data)
+
+            btf_section_num = elffile.get_section_index(".BTF")
+            btf_section_header_offset = elffile._section_offset(btf_section_num)
+            sh_offset__file_offset = btf_section_header_offset + Elf64_Shdr.sh_offset.offset
+
+            # make a pointer to the new .BTF section
+            yield WriteContext(offset=sh_offset__file_offset, bytes_to_write=bytes(Elf64_Off(new_btf_offset)))
+
+            # invalidate all bits of an old .BTF
+            yield WriteContext(offset=btf_section_offset, bytes_to_write=bytes([0xa for _ in btf_section_data]))
+
 
         btf_hdr = workaround_struct_btf_header.from_buffer_copy(btf_section_data)
         btf_hdr_len = btf_hdr.hdr_len
