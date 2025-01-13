@@ -107,7 +107,11 @@ class FileOffsetBytesIO(io.BytesIO):
     def __init__(self, file_offset: int, initial_bytes = b""):
         self.file_offset = file_offset
         super().__init__(initial_bytes)
-del io
+
+    def tell_absolute(self) -> int:
+        return self.tell() + self.file_offset
+
+del io  # use 'FileOffsetBytesIO', not 'BytesIO'.
 
 def get_null_terminated_str(data: bytes, first_byte_offset: int) -> str:
     return data[first_byte_offset:].split(b"\0")[0].decode("ascii")
@@ -133,8 +137,15 @@ def main():
     with open(elf_path, 'rb') as f:
         elffile = ELFFile(f)
 
-        btf_section_data : bytes = get_section_assert_exists(".BTF").data()
+        btf_section = get_section_assert_exists(".BTF")
         btf_ext_section = get_section_assert_exists(".BTF.ext")
+
+        btf_section_offset     = btf_section.header['sh_offset']
+        btf_ext_section_offset = btf_ext_section.header['sh_offset']
+        # section_size = section.header['sh_size']
+
+        btf_section_data     = btf_section.data()
+        btf_ext_section_data = btf_ext_section.data()
 
         btf_hdr = workaround_struct_btf_header.from_buffer_copy(btf_section_data)
         btf_hdr_len = btf_hdr.hdr_len
@@ -144,28 +155,22 @@ def main():
         assert btf_hdr.str_off > btf_hdr.type_off
 
         btf_str_data = btf_section_data[btf_hdr_len + btf_hdr.str_off:][:btf_hdr.str_len]
-        btf_type_data = btf_section_data[btf_hdr_len + btf_hdr.type_off:][:btf_hdr.type_len]
 
-        # offset = btf_ext_section.header['sh_offset']
-        # size = btf_ext_section.header['sh_size']
-
-        # print(f"File offset: {offset}")
-        # print(f"Size in bytes: {size}")
-
-        content_full = btf_ext_section.data()
+        btf_type_offset_within_btf_section = btf_hdr_len + btf_hdr.type_off
+        btf_type_data = btf_section_data[btf_type_offset_within_btf_section:][:btf_hdr.type_len]
 
         ctypes_sizeof_header = ctypes.sizeof(libbpf.struct_btf_ext_header)
-        header = libbpf.struct_btf_ext_header.from_buffer_copy(content_full[:ctypes_sizeof_header])
+        header = libbpf.struct_btf_ext_header.from_buffer_copy(btf_ext_section_data[:ctypes_sizeof_header])
         assert header.hdr_len == ctypes_sizeof_header
         assert header.magic == 0xeb9f
 
         # from docs:     /* All offsets are in bytes relative to the end of this header */
-        content_after_header = content_full[ctypes_sizeof_header:]
+        btf_ext_content_after_header = btf_ext_section_data[ctypes_sizeof_header:]
 
         if header.core_relo_len == 0:
             raise ValueError("TODO no relocations (core_relo_len == 0)")
 
-        stream = FileOffsetBytesIO(file_offset=(btf_ext_section.header['sh_offset'] + ctypes_sizeof_header), initial_bytes=content_after_header)
+        stream = FileOffsetBytesIO(file_offset=(btf_ext_section_offset + ctypes_sizeof_header), initial_bytes=btf_ext_content_after_header)
         stream.seek(header.core_relo_off)
 
         # reference: https://docs.kernel.org/bpf/btf.html#btf-ext-section
@@ -195,7 +200,7 @@ def main():
 
         del stream
         
-        stream = FileOffsetBytesIO(file_offset=..., initial_bytes=btf_type_data)
+        stream = FileOffsetBytesIO(file_offset=(btf_section_offset + btf_type_offset_within_btf_section), initial_bytes=btf_type_data)
 
         type_record_size = ctypes.sizeof(libbpf.struct_btf_type)
         type_records : list[libbpf.struct_btf_type] = []
@@ -218,7 +223,7 @@ def main():
                 kind_flag = (ctypes.c_int32(u32).value < 0), # test msb
             )
 
-        def consume_metadata_following_type(stream: FileOffsetBytesIO, btf_type_instance: libbpf.struct_btf_type):
+        def consume_metadata_following_btf_type(stream: FileOffsetBytesIO, btf_type_instance: libbpf.struct_btf_type):
             assert isinstance(btf_type_instance, libbpf.struct_btf_type)
             """
             From docs: 'For certain kinds, the common data are followed by kind-specific data.'
@@ -238,8 +243,8 @@ def main():
             elif kind == BtfKind.BTF_KIND_STRUCT:
                 # btf_type is followed by info.vlen number of struct btf_member.:
                 sizeof_member =ctypes.sizeof(libbpf.struct_btf_member)
+                print(f"struct num members: {info.vlen}")
                 members = [libbpf.struct_btf_member.from_buffer_copy(stream.read(sizeof_member)) for _ in range(info.vlen)]
-                print(f"num_members: {len(members)}")
                 for x in members:
                     print(get_null_terminated_str(data=btf_str_data, first_byte_offset=x.name_off))
                 # stream.read(ctypes.sizeof(libbpf.struct_btf_member) * info.vlen)
@@ -279,9 +284,11 @@ def main():
         while (len(record := stream.read(type_record_size)) == type_record_size):
             i += 1
             record = libbpf.struct_btf_type.from_buffer_copy(record)
+            record_file_offset = stream.tell_absolute() - type_record_size
             type_records.append(record)
-            consume_metadata_following_type(stream=stream, btf_type_instance=record)
-            print(i, ":", hex(record.name_off), ":", get_null_terminated_str(data=btf_str_data, first_byte_offset=record.name_off))
+            consume_metadata_following_btf_type(stream=stream, btf_type_instance=record)
+            type_name = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.name_off)
+            print(f"[file_offset={hex(record_file_offset)}][i={i}] {hex(record.name_off)}:", type_name, bytes(record))
         
         print(f"OK: {len(type_records)}")
         

@@ -153,7 +153,9 @@ def patch_bpf_map(
         raise ValueError(f"patch_bpf_map: BPF_MAP_UPDATE_ELEM syscall failed")
     
 
-def bpf__create_skeleton() -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
+def bpf__create_skeleton(bpf_elf: Path) -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
+
+    assert bpf_elf.is_file()
 
     # sizeof_obj = ctypes.sizeof(libbpf.bpf_object) # FIXME: assert sizeof_obj >= real_sizeof_obj (from DWARF)
 
@@ -177,8 +179,6 @@ def bpf__create_skeleton() -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
     s.prog_skel_sz = ctypes.sizeof(libbpf.bpf_prog_skeleton)
     s.progs = alloc_writable_buf(libbpf.bpf_prog_skeleton)
 
-    bpf_elf = Path("./.output/uprobe.bpf.o")
-    assert bpf_elf.is_file()
     elf_bytes = bpf_elf.read_bytes()
     elf_size = len(elf_bytes)
     elf_bytes_wrapped = ctypes.cast(ctypes.create_string_buffer(init=elf_bytes, size=elf_size), ctypes.c_void_p)
@@ -253,7 +253,7 @@ def handle_event(ctx, data, data_sz):
     return 0
 
 
-def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str, no_retprobe: bool):
+def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str, no_retprobe: bool, bpf_elf: Path):
     if btf:
         if not btf.exists():
             raise ValueError(f"Custom BTF path does not exist! {btf}")
@@ -263,7 +263,7 @@ def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str, no_ret
         open_opts_ptr = None
 
     # equivalent of auto-generated ".skel.h" file.
-    s_ptr = bpf__create_skeleton()
+    s_ptr = bpf__create_skeleton(bpf_elf=bpf_elf)
 
     err = libbpf.bpf_object__open_skeleton(s_ptr, open_opts_ptr)
     if err != 0:
@@ -363,6 +363,7 @@ if __name__ == "__main__":
     parser.add_argument("lib", type=Path, help="path to the library to set userspace breakpoint at.")
     parser.add_argument("symbol_or_offset", help="symbol name or hex file offset to set breakpoint at (e.g. 'malloc' or '0x2068').")
     parser.add_argument("-b", "--btf", type=Path, help="custom BTF path. if not specified, libbpf will seek for 'vmlinux' in default locations (e.g. sysfs)")
+    parser.add_argument("-e", "--bpf-elf", type=Path, default=Path("./.output/uprobe.bpf.o"))
     parser.add_argument("-p", "--pid", default="all", help="PID to be traced. Either an int, or 'self', or 'all'. Defaults to 'all'")
     parser.add_argument("-nr", "--no-retprobe", action="store_true")
     main(**vars(parser.parse_args()))
