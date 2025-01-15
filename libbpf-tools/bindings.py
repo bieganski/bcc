@@ -14,7 +14,7 @@ import gen.libbpf as libbpf
 import gen.bpf as bpf
 
 from elfparse import find_section_or_raise
-from chatgpt_byte_range_swap import op_write_bytes, WriteContext
+from blobmanip import op_write_bytes, WriteContext
 
 logging.basicConfig(level=logging.INFO)
 

@@ -17,7 +17,7 @@ from elftools.elf.elffile import ELFFile, Section
 from gen import bpf
 from gen import libbpf
 
-from chatgpt_byte_range_swap import *
+from blobmanip import *
 
 # NOTE: workaround for ctypesgen, that does not understand flexible struct members
 class my_btf_ext_info_sec(ctypes.Structure):
