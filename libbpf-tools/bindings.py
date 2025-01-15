@@ -9,12 +9,12 @@ import platform
 from enum import Enum
 import signal
 import logging
-import io
-
-from elftools.elf.elffile import ELFFile, Section
 
 import gen.libbpf as libbpf
 import gen.bpf as bpf
+
+from elfparse import find_section_or_raise
+from chatgpt_byte_range_swap import op_write_bytes, WriteContext
 
 logging.basicConfig(level=logging.INFO)
 
@@ -275,7 +275,7 @@ class Event(ctypes.Structure):
 
 
 # key: (library, symbol, pid, tid)
-last_entry_event_dict : dict[tuple[str, str, pid_t, pid_t], Event] = dict()
+last_entry_event_dict = dict()
 
 def fmt_ns(timedelta_ns: int) -> str:
     return f"{(timedelta_ns / 1_000_000_000):.7f} seconds"
@@ -297,7 +297,6 @@ def get_regs_of_interest(arch: CPU_Arch, is_ret: bool) -> list[str]:
         assert False
 
 
-
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(None), ctypes.c_size_t)
 def handle_event(ctx, data, data_sz):
     """
@@ -315,14 +314,15 @@ def handle_event(ctx, data, data_sz):
     ctypes.memmove(ctypes.byref(event), ctypes.byref(event_ptr.contents), data_sz)
     # alternative thing, that causes data incoherency mentioned above: "event : Event = event_ptr.contents"
     
-    hash = (event.library_path, event.symbol_name, event.pid, event.tid)
+    lib_basename = event.library_path.decode("ascii").split("/")[-1]
+    symbol_name = event.symbol_name.decode("ascii")
+    hash = (lib_basename, symbol_name, event.pid, event.tid)
 
     arch = system_get_cpu_arch()
 
     pt_regs = getattr(event.pt_regs_union, system_get_cpu_arch().value)
 
-    lib_basename = event.library_path.decode("ascii").split("/")[-1]
-    msg_prefix = f"[{event.pid}, {event.tid}][{lib_basename}:{event.symbol_name}]"
+    msg_prefix = f"[{event.pid},{event.tid}][{lib_basename}:{symbol_name}]"
 
     if event.is_ret:
         
@@ -345,35 +345,23 @@ def handle_event(ctx, data, data_sz):
 
         if not first_hit_of_hash:
             reentry_delta_ns = event.timestamp - prev_entry_event.timestamp
-            msg_infix = f"REENTRY after {reentry_delta_ns} ns"
+            msg_infix = f"REENTRY after {fmt_ns(reentry_delta_ns)}"
         else:
             msg_infix = f"FIRST ENTRY"
 
-        print(f"\n{msg_prefix} {msg_infix} {regs_str}")
+        print(f"{msg_prefix} {msg_infix} {regs_str}")
     return 0
 
-def get_section_assert_exists(elffile: ELFFile, name: str) -> Section:
-    """
-    TODO duplicated with dump_btf_ext.py
-    """
-    section = elffile.get_section_by_name(name)
-    if section is None:
-        raise ValueError(f"Section '{name}' not found in the ELF file.")
-    return section
-
 def preprocess_bpf_elf(elf_bytes: bytes) -> bytes:
-    from chatgpt_byte_range_swap import op_write_bytes, WriteContext
     native_arch = system_get_cpu_arch()
 
     for arch in CPU_Arch:
-        arch_section = get_section_assert_exists(ELFFile(io.BytesIO(elf_bytes)), f".data.arch_is_{arch.value}")
-        assert arch_section.data_size == 4
+        arch_section = find_section_or_raise(elf_content=elf_bytes, sec_name=f".data.arch_is_{arch.value}")
+        assert arch_section.content_length == 4
 
-        val = bytes(ctypes.c_uint32(0))
-        if native_arch == arch:
-            val = bytes(ctypes.c_uint32(1))
+        val = bytes(ctypes.c_uint32(1 if arch == native_arch else 0))
         
-        op = WriteContext(offset=arch_section.header['sh_offset'], bytes_to_write=val)
+        op = WriteContext(offset=arch_section.content_file_offset, bytes_to_write=val)
         elf_bytes = op_write_bytes(context=op, input_data=elf_bytes)
 
     return elf_bytes
