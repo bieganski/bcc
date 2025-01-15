@@ -9,6 +9,9 @@ import platform
 from enum import Enum
 import signal
 import logging
+import io
+
+from elftools.elf.elffile import ELFFile, Section
 
 import gen.libbpf as libbpf
 import gen.bpf as bpf
@@ -66,16 +69,13 @@ def test_struct_packing():
 
             print(f"Symbol {name_demangled} OK, size {real_size}")
 
-
-
 class CPU_Arch(Enum):
     x86_64 = "x86_64"
     riscv64 = "riscv64"
-    unknown = "unknown"
 
 def system_get_cpu_arch() -> CPU_Arch:
     machine = platform.machine()
-    return CPU_Arch(machine) # TODO: handle 'unknown'
+    return CPU_Arch(machine)
 
 bpf_syscall_nr = {
     CPU_Arch.x86_64: 321,
@@ -153,9 +153,9 @@ def patch_bpf_map(
         raise ValueError(f"patch_bpf_map: BPF_MAP_UPDATE_ELEM syscall failed")
     
 
-def bpf__create_skeleton(bpf_elf: Path) -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
+def bpf__create_skeleton(bpf_elf_bytes: bytes) -> "ctypes._Pointer[libbpf.bpf_object_skeleton]":
 
-    assert bpf_elf.is_file()
+    assert isinstance(bpf_elf_bytes, bytes)
 
     # sizeof_obj = ctypes.sizeof(libbpf.bpf_object) # FIXME: assert sizeof_obj >= real_sizeof_obj (from DWARF)
 
@@ -179,14 +179,85 @@ def bpf__create_skeleton(bpf_elf: Path) -> "ctypes._Pointer[libbpf.bpf_object_sk
     s.prog_skel_sz = ctypes.sizeof(libbpf.bpf_prog_skeleton)
     s.progs = alloc_writable_buf(libbpf.bpf_prog_skeleton)
 
-    elf_bytes = bpf_elf.read_bytes()
-    elf_size = len(elf_bytes)
-    elf_bytes_wrapped = ctypes.cast(ctypes.create_string_buffer(init=elf_bytes, size=elf_size), ctypes.c_void_p)
+    bpf_elf_size = len(bpf_elf_bytes)
+    
+    elf_bytes_wrapped = ctypes.cast(ctypes.create_string_buffer(init=bpf_elf_bytes, size=bpf_elf_size), ctypes.c_void_p)
 
-    s.data_sz = elf_size
+    s.data_sz = bpf_elf_size
     s.data = elf_bytes_wrapped
 
     return s_ptr
+
+class struct_pt_regs_riscv64(ctypes.Structure):
+    _fields_ = [
+        ('epc', ctypes.c_ulong),
+        ('ra', ctypes.c_ulong),
+        ('sp', ctypes.c_ulong),
+        ('gp', ctypes.c_ulong),
+        ('tp', ctypes.c_ulong),
+        ('t0', ctypes.c_ulong),
+        ('t1', ctypes.c_ulong),
+        ('t2', ctypes.c_ulong),
+        ('s0', ctypes.c_ulong),
+        ('s1', ctypes.c_ulong),
+        ('a0', ctypes.c_ulong),
+        ('a1', ctypes.c_ulong),
+        ('a2', ctypes.c_ulong),
+        ('a3', ctypes.c_ulong),
+        ('a4', ctypes.c_ulong),
+        ('a5', ctypes.c_ulong),
+        ('a6', ctypes.c_ulong),
+        ('a7', ctypes.c_ulong),
+        ('s2', ctypes.c_ulong),
+        ('s3', ctypes.c_ulong),
+        ('s4', ctypes.c_ulong),
+        ('s5', ctypes.c_ulong),
+        ('s6', ctypes.c_ulong),
+        ('s7', ctypes.c_ulong),
+        ('s8', ctypes.c_ulong),
+        ('s9', ctypes.c_ulong),
+        ('s10', ctypes.c_ulong),
+        ('s11', ctypes.c_ulong),
+        ('t3', ctypes.c_ulong),
+        ('t4', ctypes.c_ulong),
+        ('t5', ctypes.c_ulong),
+        ('t6', ctypes.c_ulong),
+        ('status', ctypes.c_ulong),
+        ('badaddr', ctypes.c_ulong),
+        ('cause', ctypes.c_ulong),
+        ('orig_a0', ctypes.c_ulong),
+    ]
+
+class struct_pt_regs_x86_64(ctypes.Structure):
+    _fields_ = [
+        ('r15', ctypes.c_ulong),
+        ('r14', ctypes.c_ulong),
+        ('r13', ctypes.c_ulong),
+        ('r12', ctypes.c_ulong),
+        ('bp', ctypes.c_ulong),
+        ('bx', ctypes.c_ulong),
+        ('r11', ctypes.c_ulong),
+        ('r10', ctypes.c_ulong),
+        ('r9', ctypes.c_ulong),
+        ('r8', ctypes.c_ulong),
+        ('ax', ctypes.c_ulong),
+        ('cx', ctypes.c_ulong),
+        ('dx', ctypes.c_ulong),
+        ('si', ctypes.c_ulong),
+        ('di', ctypes.c_ulong),
+        ('orig_ax', ctypes.c_ulong),
+        ('ip', ctypes.c_ulong),
+        ('cs', ctypes.c_ulong),
+        ('flags', ctypes.c_ulong),
+        ('sp', ctypes.c_ulong),
+        ('ss', ctypes.c_ulong),
+    ]
+
+class union_pt_regs(ctypes.Union):
+    _fields_ = [
+        ("x86_64", struct_pt_regs_x86_64),
+        ("riscv64", struct_pt_regs_riscv64),
+    ]
 
 # Define the struct event in Python
 class Event(ctypes.Structure):
@@ -196,18 +267,10 @@ class Event(ctypes.Structure):
         ("pid", ctypes.c_int32),
         ("tid", ctypes.c_int32),
 
-        ("pc",          ctypes.c_ulong),
-        ("ret_addr",    ctypes.c_ulong),
-        ("ret_val",     ctypes.c_ulong),
-        ("arg1",        ctypes.c_ulong),
-        ("arg2",        ctypes.c_ulong),
-        ("arg3",        ctypes.c_ulong),
-        ("arg4",        ctypes.c_ulong),
-        ("arg5",        ctypes.c_ulong),
-        ("arg6",        ctypes.c_ulong),
-
         ("timestamp",   ctypes.c_uint64),
         ("is_ret",      ctypes.c_int32),
+
+        ("pt_regs_union", union_pt_regs)
     ]
 
 
@@ -221,6 +284,7 @@ def fmt_ns(timedelta_ns: int) -> str:
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(None), ctypes.c_size_t)
 def handle_event(ctx, data, data_sz):
+    assert data_sz == ctypes.sizeof(Event)
     event_ptr = ctypes.cast(data, ctypes.POINTER(Event))
     event : Event = event_ptr.contents
     
@@ -236,7 +300,7 @@ def handle_event(ctx, data, data_sz):
 
         # NOTE: possible race condition to stdout, as we don't verify whether the last
         # line printed comes from the same 'hash' as current 'event'. in practice rarely should happen.
-        print(f" = {event.ret_val}. exec time ns: {fmt_ns(exec_time_ns)}")
+        print(f" = {'TODO RET VAL'}. exec time ns: {fmt_ns(exec_time_ns)}")
     else:
         # 'event' is an entry event
         prev_entry = last_entry_event.get(hash)
@@ -247,11 +311,39 @@ def handle_event(ctx, data, data_sz):
         else:
             reentry_delta_ns = event.timestamp - prev_entry.timestamp
             msg_prefix = f"reentry {event.symbol_name} after {fmt_ns(reentry_delta_ns)}"
+        
 
-        print(f"\n{msg_prefix} (pid={event.pid}), args: (0x{event.arg1:x}, 0x{event.arg2:x}, 0x{event.arg3:x}, "
-              f"0x{event.arg4:x}, 0x{event.arg5:x}, 0x{event.arg6:x})", end="")
+        pt_regs = getattr(event.pt_regs_union, system_get_cpu_arch().value)
+        print(f"\n{[(reg_name, hex(getattr(pt_regs, reg_name))) for reg_name, _ in pt_regs._fields_]}")
+        # print(f"\n{msg_prefix} (pid={event.pid}), args: (0x{event.arg1:x}, 0x{event.arg2:x}, 0x{event.arg3:x}, "
+        #       f"0x{event.arg4:x}, 0x{event.arg5:x}, 0x{event.arg6:x})", end="")
     return 0
 
+def get_section_assert_exists(elffile: ELFFile, name: str) -> Section:
+    """
+    TODO duplicated with dump_btf_ext.py
+    """
+    section = elffile.get_section_by_name(name)
+    if section is None:
+        raise ValueError(f"Section '{name}' not found in the ELF file.")
+    return section
+
+def preprocess_bpf_elf(elf_bytes: bytes) -> bytes:
+    from chatgpt_byte_range_swap import op_write_bytes, WriteContext
+    native_arch = system_get_cpu_arch()
+
+    for arch in CPU_Arch:
+        arch_section = get_section_assert_exists(ELFFile(io.BytesIO(elf_bytes)), f".data.arch_is_{arch.value}")
+        assert arch_section.data_size == 4
+
+        val = bytes(ctypes.c_uint32(0))
+        if native_arch == arch:
+            val = bytes(ctypes.c_uint32(1))
+        
+        op = WriteContext(offset=arch_section.header['sh_offset'], bytes_to_write=val)
+        elf_bytes = op_write_bytes(context=op, input_data=elf_bytes)
+
+    return elf_bytes
 
 def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str, no_retprobe: bool, bpf_elf: Path):
     if btf:
@@ -261,9 +353,12 @@ def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str, no_ret
         open_opts_ptr = ctypes.byref(open_opts)
     else:
         open_opts_ptr = None
+    
+    # adjust to native CPU arch
+    elf_bytes = preprocess_bpf_elf(bpf_elf.read_bytes())
 
     # equivalent of auto-generated ".skel.h" file.
-    s_ptr = bpf__create_skeleton(bpf_elf=bpf_elf)
+    s_ptr = bpf__create_skeleton(bpf_elf_bytes=elf_bytes)
 
     err = libbpf.bpf_object__open_skeleton(s_ptr, open_opts_ptr)
     if err != 0:
@@ -314,6 +409,8 @@ def main(lib: Path, symbol_or_offset: str, btf: Optional[Path], pid: str, no_ret
     programs_ptr = obj_ptr.contents.programs
     assert (num_progs := obj_ptr.contents.nr_programs) == 2
     
+    # NOTE: be careful here, as 'nr_programs' is also incremented for non-inlined static functions.
+    # https://mailweb.openeuler.org/hyperkitty/list/kernel@openeuler.org/message/I7OJDEIGUDF42JEBJ5BDAZRNCLYIZCV5/
     for i in range(num_progs):
         if "ret_" in programs_ptr[i].name.data.decode("ascii"):
             uprobe_opts.retprobe = True

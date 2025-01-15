@@ -5,6 +5,8 @@ import ctypes
 import io
 from dataclasses import dataclass
 from enum import IntEnum, Enum, auto
+import platform
+
 
 from inspect import getmembers
 from pprint import pformat
@@ -128,9 +130,10 @@ def get_section_assert_exists(elffile: ELFFile, name: str) -> Section:
 class PatchExample(Enum):
     btf_offset_part_of_type_table_and_whole_str_table = auto()  # only tested on x86_64
     elf_recreate_btf_section = auto()
+    elf_detect_arch_and_let_data_section_know = auto()
 
-# patch_example = None
-patch_example = PatchExample.elf_recreate_btf_section
+# patch_variant = None
+patch_variant = PatchExample.elf_detect_arch_and_let_data_section_know
 
 
 # TODO: there exists 'elffile.structs.Elf_Shdr' thing in pyelftools, but I couldn't figure out how to reuse it.
@@ -153,207 +156,223 @@ class Elf64_Shdr(ctypes.Structure):
         ("sh_entsize", Elf64_Xword),
     ]
 
+class CPU_Arch(Enum):
+    x86_64 = "x86_64"
+    riscv64 = "riscv64"
+    arm = "arm"
+    aarch64 = "aarch64"
+
+def system_get_cpu_arch() -> CPU_Arch:
+    machine = platform.machine()
+    return CPU_Arch(machine)
+
 def main(elf_path: str):
 
-    global patch_example
+    global patch_variant
 
-    with open(elf_path, 'rb') as f:
-        elffile = ELFFile(f)
+    elffile = ELFFile(Path(elf_path).open("rb"))
 
-        btf_section = get_section_assert_exists(elffile, ".BTF")
-        btf_ext_section = get_section_assert_exists(elffile, ".BTF.ext")
+    if patch_variant == PatchExample.elf_detect_arch_and_let_data_section_know:
+        arch = system_get_cpu_arch()
+        arch_section = get_section_assert_exists(elffile, f".data.arch_is_{arch.value}")
+        assert arch_section.data_size == 4
+        yield WriteContext(offset=arch_section.header['sh_offset'], bytes_to_write=bytes(ctypes.c_uint32(1)))
+        return # nothing else to do
 
-        btf_section_offset     = btf_section.header['sh_offset']
-        btf_ext_section_offset = btf_ext_section.header['sh_offset']
-        # section_size = section.header['sh_size']
+    btf_section = get_section_assert_exists(elffile, ".BTF")
+    btf_ext_section = get_section_assert_exists(elffile, ".BTF.ext")
 
-        btf_section_data     = btf_section.data()
-        btf_ext_section_data = btf_ext_section.data()
+    btf_section_offset     = btf_section.header['sh_offset']
+    btf_ext_section_offset = btf_ext_section.header['sh_offset']
+    # section_size = section.header['sh_size']
 
-        if patch_example == PatchExample.elf_recreate_btf_section:
-            elf_size = Path(elf_path).stat().st_size
-            new_btf_offset = (elf_size + 0x1000) & (~0xfff)
+    btf_section_data     = btf_section.data()
+    btf_ext_section_data = btf_ext_section.data()
 
-            # copy .BTF content to the end of file (plus some alignment)
-            yield WriteContext(offset=new_btf_offset, bytes_to_write=btf_section_data)
+    if patch_variant == PatchExample.elf_recreate_btf_section:
+        elf_size = Path(elf_path).stat().st_size
+        new_btf_offset = (elf_size + 0x1000) & (~0xfff)
 
-            btf_section_num = elffile.get_section_index(".BTF")
-            btf_section_header_offset = elffile._section_offset(btf_section_num)
-            sh_offset__file_offset = btf_section_header_offset + Elf64_Shdr.sh_offset.offset
+        # copy .BTF content to the end of file (plus some alignment)
+        yield WriteContext(offset=new_btf_offset, bytes_to_write=btf_section_data)
 
-            # make a pointer to the new .BTF section
-            yield WriteContext(offset=sh_offset__file_offset, bytes_to_write=bytes(Elf64_Off(new_btf_offset)))
+        btf_section_num = elffile.get_section_index(".BTF")
+        btf_section_header_offset = elffile._section_offset(btf_section_num)
+        sh_offset__file_offset = btf_section_header_offset + Elf64_Shdr.sh_offset.offset
 
-            # invalidate all bits of an old .BTF
-            yield WriteContext(offset=btf_section_offset, bytes_to_write=bytes([0xa for _ in btf_section_data]))
+        # make a pointer to the new .BTF section
+        yield WriteContext(offset=sh_offset__file_offset, bytes_to_write=bytes(Elf64_Off(new_btf_offset)))
+
+        # invalidate all bits of an old .BTF
+        yield WriteContext(offset=btf_section_offset, bytes_to_write=bytes([0xa for _ in btf_section_data]))
 
 
-        btf_hdr = workaround_struct_btf_header.from_buffer_copy(btf_section_data)
-        btf_hdr_len = btf_hdr.hdr_len
-        assert btf_hdr_len == ctypes.sizeof(workaround_struct_btf_header)
+    btf_hdr = workaround_struct_btf_header.from_buffer_copy(btf_section_data)
+    btf_hdr_len = btf_hdr.hdr_len
+    assert btf_hdr_len == ctypes.sizeof(workaround_struct_btf_header)
 
-        if patch_example == PatchExample.btf_offset_part_of_type_table_and_whole_str_table:
-            yield VerifyContext(offset=btf_section_offset, reference=bytes(btf_hdr))
-            yield WriteContext(bytes_to_write=bytes(ctypes.c_uint32(btf_hdr.str_off - 12)), offset=btf_section_offset + workaround_struct_btf_header.str_off.offset)
-            yield WriteContext(bytes_to_write=bytes(ctypes.c_uint32(btf_hdr.type_len - 12)), offset=btf_section_offset + workaround_struct_btf_header.type_len.offset)
+    if patch_variant == PatchExample.btf_offset_part_of_type_table_and_whole_str_table:
+        yield VerifyContext(offset=btf_section_offset, reference=bytes(btf_hdr))
+        yield WriteContext(bytes_to_write=bytes(ctypes.c_uint32(btf_hdr.str_off - 12)), offset=btf_section_offset + workaround_struct_btf_header.str_off.offset)
+        yield WriteContext(bytes_to_write=bytes(ctypes.c_uint32(btf_hdr.type_len - 12)), offset=btf_section_offset + workaround_struct_btf_header.type_len.offset)
 
-        # probably that assert is not necessary for our relocation editor, TODO revisit
-        assert btf_hdr.str_off > btf_hdr.type_off
+    # probably that assert is not necessary for our relocation editor, TODO revisit
+    assert btf_hdr.str_off > btf_hdr.type_off
 
-        btf_str_data = btf_section_data[btf_hdr_len + btf_hdr.str_off:][:btf_hdr.str_len]
-        # raise ValueError(x(btf_hdr))
+    btf_str_data = btf_section_data[btf_hdr_len + btf_hdr.str_off:][:btf_hdr.str_len]
+    # raise ValueError(x(btf_hdr))
 
-        btf_type_offset_within_btf_section = btf_hdr_len + btf_hdr.type_off
-        btf_type_data = btf_section_data[btf_type_offset_within_btf_section:][:btf_hdr.type_len]
+    btf_type_offset_within_btf_section = btf_hdr_len + btf_hdr.type_off
+    btf_type_data = btf_section_data[btf_type_offset_within_btf_section:][:btf_hdr.type_len]
 
-        ctypes_sizeof_header = ctypes.sizeof(libbpf.struct_btf_ext_header)
-        header = libbpf.struct_btf_ext_header.from_buffer_copy(btf_ext_section_data[:ctypes_sizeof_header])
-        assert header.hdr_len == ctypes_sizeof_header
-        assert header.magic == 0xeb9f
+    ctypes_sizeof_header = ctypes.sizeof(libbpf.struct_btf_ext_header)
+    header = libbpf.struct_btf_ext_header.from_buffer_copy(btf_ext_section_data[:ctypes_sizeof_header])
+    assert header.hdr_len == ctypes_sizeof_header
+    assert header.magic == 0xeb9f
 
-        # from docs:     /* All offsets are in bytes relative to the end of this header */
-        btf_ext_content_after_header = btf_ext_section_data[ctypes_sizeof_header:]
+    # from docs:     /* All offsets are in bytes relative to the end of this header */
+    btf_ext_content_after_header = btf_ext_section_data[ctypes_sizeof_header:]
 
-        if header.core_relo_len == 0:
-            raise ValueError("TODO no relocations (core_relo_len == 0)")
+    if header.core_relo_len == 0:
+        raise ValueError("TODO no relocations (core_relo_len == 0)")
 
-        stream = FileOffsetBytesIO(file_offset=(btf_ext_section_offset + ctypes_sizeof_header), initial_bytes=btf_ext_content_after_header)
-        stream.seek(header.core_relo_off)
+    stream = FileOffsetBytesIO(file_offset=(btf_ext_section_offset + ctypes_sizeof_header), initial_bytes=btf_ext_content_after_header)
+    stream.seek(header.core_relo_off)
 
-        # reference: https://docs.kernel.org/bpf/btf.html#btf-ext-section
-        core_relo_rec_size = ctypes.c_uint32.from_buffer_copy(stream.read(4)).value
+    # reference: https://docs.kernel.org/bpf/btf.html#btf-ext-section
+    core_relo_rec_size = ctypes.c_uint32.from_buffer_copy(stream.read(4)).value
 
-        assert core_relo_rec_size == ctypes.sizeof(libbpf.struct_bpf_core_relo)
+    assert core_relo_rec_size == ctypes.sizeof(libbpf.struct_bpf_core_relo)
 
-        sec_info_sizeof_partial = ctypes.sizeof(my_btf_ext_info_sec)
+    sec_info_sizeof_partial = ctypes.sizeof(my_btf_ext_info_sec)
 
-        struct_bpf_core_relo_instances = dict()
+    struct_bpf_core_relo_instances = dict()
 
-        # collect all known relocation types.
-        while len(sec_info_partial_header_bytes := stream.read(sec_info_sizeof_partial)):
-            sec_info_partial = my_btf_ext_info_sec.from_buffer_copy(sec_info_partial_header_bytes)
-            corresponding_section_name = get_null_terminated_str(data=btf_str_data, first_byte_offset=sec_info_partial.sec_name_off)
-            print(f"[{corresponding_section_name}] num records: {sec_info_partial.num_info}", file=sys.stderr)
-            
-            struct_bpf_core_relo_instances[corresponding_section_name] = cur_lst = []
-            for i in range(sec_info_partial.num_info):
-                record_file_offset = stream.tell_absolute()
-                record = libbpf.struct_bpf_core_relo.from_buffer_copy(stream.read(core_relo_rec_size))
-                cur_lst.append(record)
-                access_str = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.access_str_off)
-                print(f"{access_str}, type_id={hex(record.type_id)}, kind={workaround_enum_bpf_core_relo_kind(record.kind).name}", file=sys.stderr)
-
-        # TODO: leave it for convenience for now, as we deal with 'len(struct_bpf_core_relo_instances) == 1' case.
-        # del cur_lst
-
-        del stream
+    # collect all known relocation types.
+    while len(sec_info_partial_header_bytes := stream.read(sec_info_sizeof_partial)):
+        sec_info_partial = my_btf_ext_info_sec.from_buffer_copy(sec_info_partial_header_bytes)
+        corresponding_section_name = get_null_terminated_str(data=btf_str_data, first_byte_offset=sec_info_partial.sec_name_off)
+        print(f"[{corresponding_section_name}] num records: {sec_info_partial.num_info}", file=sys.stderr)
         
-        stream = FileOffsetBytesIO(file_offset=(btf_section_offset + btf_type_offset_within_btf_section), initial_bytes=btf_type_data)
+        struct_bpf_core_relo_instances[corresponding_section_name] = cur_lst = []
+        for i in range(sec_info_partial.num_info):
+            record_file_offset = stream.tell_absolute()
+            record = libbpf.struct_bpf_core_relo.from_buffer_copy(stream.read(core_relo_rec_size))
+            access_str = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.access_str_off)
+            cur_lst.append((record, access_str))
+            print(f"{access_str}, type_id={hex(record.type_id)}, kind={workaround_enum_bpf_core_relo_kind(record.kind).name}", file=sys.stderr)
 
-        type_record_size = ctypes.sizeof(libbpf.struct_btf_type)
-        type_records : list[libbpf.struct_btf_type] = []
+    del cur_lst
+    del stream
+    
+    stream = FileOffsetBytesIO(file_offset=(btf_section_offset + btf_type_offset_within_btf_section), initial_bytes=btf_type_data)
 
-        def btf_type_decode_info_field(instance: libbpf.struct_btf_type) -> BtfTypeInfo:
-            """
-            /* "info" bits arrangement
-            * bits  0-15: vlen (e.g. # of struct's members)
-            * bits 16-23: unused
-            * bits 24-28: kind (e.g. int, ptr, array...etc)
-            * bits 29-30: unused
-            * bit     31: kind_flag, currently used by
-            *             struct, union, fwd, enum and enum64.
-            */
-            """
-            u32 = instance.info
-            return BtfTypeInfo(
-                vlen = u32 & 0xffff,
-                kind = BtfKind((u32 >> 24) & 0xf),
-                kind_flag = (ctypes.c_int32(u32).value < 0), # test msb
-            )
+    type_record_size = ctypes.sizeof(libbpf.struct_btf_type)
+    type_records : list[libbpf.struct_btf_type] = []
 
-        def consume_metadata_following_btf_type(stream: FileOffsetBytesIO, btf_type_instance: libbpf.struct_btf_type):
-            assert isinstance(btf_type_instance, libbpf.struct_btf_type)
-            """
-            From docs: 'For certain kinds, the common data are followed by kind-specific data.'
-            See https://docs.kernel.org/bpf/btf.html#btf-ext-section for more details.
-            """
-            info = btf_type_decode_info_field(instance=btf_type_instance)
-            kind = info.kind
-            if kind == BtfKind.BTF_KIND_INT:
-                # btf_type is followed by a u32 with the following bits arrangement:
-                stream.read(4)
-            elif kind == BtfKind.BTF_KIND_PTR:
-                # No additional type data follow btf_type.
-                pass
-            elif kind == BtfKind.BTF_KIND_ARRAY:
-                # btf_type is followed by one struct btf_array:
-                stream.read(ctypes.sizeof(libbpf.struct_btf_array))
-            elif kind == BtfKind.BTF_KIND_STRUCT:
-                # btf_type is followed by info.vlen number of struct btf_member.:
-                sizeof_member =ctypes.sizeof(libbpf.struct_btf_member)
-                print(f"struct num members: {info.vlen}", file=sys.stderr)
-                members = [libbpf.struct_btf_member.from_buffer_copy(stream.read(sizeof_member)) for _ in range(info.vlen)]
-                for x in members:
-                    print(get_null_terminated_str(data=btf_str_data, first_byte_offset=x.name_off), file=sys.stderr)
-                # stream.read(ctypes.sizeof(libbpf.struct_btf_member) * info.vlen)
-            elif kind == BtfKind.BTF_KIND_UNION:
-                # btf_type is followed by info.vlen number of struct btf_member.:
-                stream.read(ctypes.sizeof(libbpf.struct_btf_member) * info.vlen)
-            elif kind == BtfKind.BTF_KIND_ENUM:
-                # btf_type is followed by info.vlen number of struct btf_enum.:
-                stream.read(ctypes.sizeof(workaround_struct_btf_enum) * info.vlen)
-            elif kind in [BtfKind.BTF_KIND_FWD, BtfKind.BTF_KIND_TYPEDEF, BtfKind.BTF_KIND_VOLATILE, BtfKind.BTF_KIND_CONST, BtfKind.BTF_KIND_RESTRICT, BtfKind.BTF_KIND_FUNC]:
-                # No additional type data follow btf_type.
-                pass
-            elif kind == BtfKind.BTF_KIND_FUNC_PROTO:
-                # btf_type is followed by info.vlen number of struct btf_param.:
-                stream.read(ctypes.sizeof(libbpf.struct_btf_param) * info.vlen)
-            elif kind == BtfKind.BTF_KIND_VAR:
-                # btf_type is followed by a single struct btf_variable with the following data:
-                stream.read(ctypes.sizeof(libbpf.struct_btf_var))
-            elif kind == BtfKind.BTF_KIND_DATASEC:
-                # btf_type is followed by info.vlen number of struct btf_var_secinfo.:
-                stream.read(ctypes.sizeof(libbpf.struct_btf_var_secinfo) * info.vlen)
-            elif kind == BtfKind.BTF_KIND_FLOAT:
-                # No additional type data follow btf_type.
-                pass
-            elif kind == BtfKind.BTF_KIND_DECL_TAG:
-                # btf_type is followed by struct btf_decl_tag.:
-                stream.read(ctypes.sizeof(workaround_struct_btf_decl_tag))
-            elif kind == BtfKind.BTF_KIND_TYPE_TAG:
-                raise NotImplementedError("TODO, as docs is not clear whether sth should be consumed")
-            elif kind == BtfKind.BTF_KIND_ENUM64:
-                # btf_type is followed by info.vlen number of struct btf_enum64.:
-                stream.read(ctypes.sizeof(workaround_struct_btf_enum64) * info.vlen)
-            else:
-                assert False
+    def btf_type_decode_info_field(instance: libbpf.struct_btf_type) -> BtfTypeInfo:
+        """
+        /* "info" bits arrangement
+        * bits  0-15: vlen (e.g. # of struct's members)
+        * bits 16-23: unused
+        * bits 24-28: kind (e.g. int, ptr, array...etc)
+        * bits 29-30: unused
+        * bit     31: kind_flag, currently used by
+        *             struct, union, fwd, enum and enum64.
+        */
+        """
+        u32 = instance.info
+        return BtfTypeInfo(
+            vlen = u32 & 0xffff,
+            kind = BtfKind((u32 >> 24) & 0xf),
+            kind_flag = (ctypes.c_int32(u32).value < 0), # test msb
+        )
 
-        i = 0
-        while (len(record := stream.read(type_record_size)) == type_record_size):
-            i += 1
-            record = libbpf.struct_btf_type.from_buffer_copy(record)
-            record_file_offset = stream.tell_absolute() - type_record_size
-            type_records.append(record)
-            consume_metadata_following_btf_type(stream=stream, btf_type_instance=record)
-            type_name = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.name_off)
-            print(f"[file_offset={hex(record_file_offset)}][i={i}] {hex(record.name_off)}:", type_name, bytes(record), file=sys.stderr)
+    def consume_metadata_following_btf_type(stream: FileOffsetBytesIO, btf_type_instance: libbpf.struct_btf_type):
+        assert isinstance(btf_type_instance, libbpf.struct_btf_type)
+        """
+        From docs: 'For certain kinds, the common data are followed by kind-specific data.'
+        See https://docs.kernel.org/bpf/btf.html#btf-ext-section for more details.
+        """
+        info = btf_type_decode_info_field(instance=btf_type_instance)
+        kind = info.kind
+        if kind == BtfKind.BTF_KIND_INT:
+            # btf_type is followed by a u32 with the following bits arrangement:
+            stream.read(4)
+        elif kind == BtfKind.BTF_KIND_PTR:
+            # No additional type data follow btf_type.
+            pass
+        elif kind == BtfKind.BTF_KIND_ARRAY:
+            # btf_type is followed by one struct btf_array:
+            stream.read(ctypes.sizeof(libbpf.struct_btf_array))
+        elif kind == BtfKind.BTF_KIND_STRUCT:
+            # btf_type is followed by info.vlen number of struct btf_member.:
+            sizeof_member =ctypes.sizeof(libbpf.struct_btf_member)
+            print(f"struct num members: {info.vlen}", file=sys.stderr)
+            members = [libbpf.struct_btf_member.from_buffer_copy(stream.read(sizeof_member)) for _ in range(info.vlen)]
+            for x in members:
+                print(get_null_terminated_str(data=btf_str_data, first_byte_offset=x.name_off), file=sys.stderr)
+            # stream.read(ctypes.sizeof(libbpf.struct_btf_member) * info.vlen)
+        elif kind == BtfKind.BTF_KIND_UNION:
+            # btf_type is followed by info.vlen number of struct btf_member.:
+            stream.read(ctypes.sizeof(libbpf.struct_btf_member) * info.vlen)
+        elif kind == BtfKind.BTF_KIND_ENUM:
+            # btf_type is followed by info.vlen number of struct btf_enum.:
+            stream.read(ctypes.sizeof(workaround_struct_btf_enum) * info.vlen)
+        elif kind in [BtfKind.BTF_KIND_FWD, BtfKind.BTF_KIND_TYPEDEF, BtfKind.BTF_KIND_VOLATILE, BtfKind.BTF_KIND_CONST, BtfKind.BTF_KIND_RESTRICT, BtfKind.BTF_KIND_FUNC]:
+            # No additional type data follow btf_type.
+            pass
+        elif kind == BtfKind.BTF_KIND_FUNC_PROTO:
+            # btf_type is followed by info.vlen number of struct btf_param.:
+            stream.read(ctypes.sizeof(libbpf.struct_btf_param) * info.vlen)
+        elif kind == BtfKind.BTF_KIND_VAR:
+            # btf_type is followed by a single struct btf_variable with the following data:
+            stream.read(ctypes.sizeof(libbpf.struct_btf_var))
+        elif kind == BtfKind.BTF_KIND_DATASEC:
+            # btf_type is followed by info.vlen number of struct btf_var_secinfo.:
+            stream.read(ctypes.sizeof(libbpf.struct_btf_var_secinfo) * info.vlen)
+        elif kind == BtfKind.BTF_KIND_FLOAT:
+            # No additional type data follow btf_type.
+            pass
+        elif kind == BtfKind.BTF_KIND_DECL_TAG:
+            # btf_type is followed by struct btf_decl_tag.:
+            stream.read(ctypes.sizeof(workaround_struct_btf_decl_tag))
+        elif kind == BtfKind.BTF_KIND_TYPE_TAG:
+            raise NotImplementedError("TODO, as docs is not clear whether sth should be consumed")
+        elif kind == BtfKind.BTF_KIND_ENUM64:
+            # btf_type is followed by info.vlen number of struct btf_enum64.:
+            stream.read(ctypes.sizeof(workaround_struct_btf_enum64) * info.vlen)
+        else:
+            assert False
 
-            info = btf_type_decode_info_field(instance=record)
-            vlen = info.vlen
-            kind = info.kind
-            if patch_example == PatchExample.btf_offset_part_of_type_table_and_whole_str_table:
-                if kind == BtfKind.BTF_KIND_STRUCT and vlen > 10:
-                    assert type_name == "pt_regs"
-                    start_off = stream.tell_absolute()
-                    end_off = btf_section_offset + ctypes.sizeof(btf_hdr) + btf_hdr.str_off + btf_hdr.str_len
-                    yield ShiftRangeLeftContext(r_min_incl=start_off, r_max_excl=end_off, num=ctypes.sizeof(libbpf.struct_btf_member))
-                    vlen_offset = record_file_offset + libbpf.struct_btf_type.info.offset  # 2 lowest bytes, see 'btf_type_decode_info_field'
-                    yield VerifyContext(offset=vlen_offset, reference=bytes(ctypes.c_uint16(info.vlen)))
-                    yield WriteContext(bytes_to_write=bytes(ctypes.c_uint16(info.vlen - 1)), offset=vlen_offset)
-        
-        print(f"OK: {len(type_records)}", file=sys.stderr)
+    i = 0
+    while (len(record := stream.read(type_record_size)) == type_record_size):
+        i += 1
+        record = libbpf.struct_btf_type.from_buffer_copy(record)
+        record_file_offset = stream.tell_absolute() - type_record_size
+        type_records.append(record)
+        consume_metadata_following_btf_type(stream=stream, btf_type_instance=record)
+        type_name = get_null_terminated_str(data=btf_str_data, first_byte_offset=record.name_off)
+        print(f"[file_offset={hex(record_file_offset)}][i={i}] {hex(record.name_off)}:", type_name, bytes(record), file=sys.stderr)
 
-        return [] # XXX active in case of nothing was yield
+        info = btf_type_decode_info_field(instance=record)
+        vlen = info.vlen
+        kind = info.kind
+        if patch_variant == PatchExample.btf_offset_part_of_type_table_and_whole_str_table:
+            if kind == BtfKind.BTF_KIND_STRUCT and vlen > 10:
+                assert type_name == "pt_regs"
+                start_off = stream.tell_absolute()
+                end_off = btf_section_offset + ctypes.sizeof(btf_hdr) + btf_hdr.str_off + btf_hdr.str_len
+                yield ShiftRangeLeftContext(r_min_incl=start_off, r_max_excl=end_off, num=ctypes.sizeof(libbpf.struct_btf_member))
+                vlen_offset = record_file_offset + libbpf.struct_btf_type.info.offset  # 2 lowest bytes, see 'btf_type_decode_info_field'
+                yield VerifyContext(offset=vlen_offset, reference=bytes(ctypes.c_uint16(info.vlen)))
+                yield WriteContext(bytes_to_write=bytes(ctypes.c_uint16(info.vlen - 1)), offset=vlen_offset)
+    
+    for section_name, lst in struct_bpf_core_relo_instances.items():
+        for (relo_instance, access_str) in lst:
+            raise ValueError(x(relo_instance))
+    
+    return [] # XXX active in case of nothing was yield
         
 
 def top(elf_path):
@@ -363,10 +382,8 @@ def top(elf_path):
 
 if __name__ == "__main__":
     # Ensure a single CLI parameter is provided
-    if len(sys.argv) != 2:
-        print("Usage: python script.py <path-to-elf-file>")
-        sys.exit(1)
-
-    elf_path = sys.argv[1]
-
-    top(elf_path)
+    from argparse import ArgumentParser
+    parser = ArgumentParser()
+    parser.add_argument("elf_path", type=Path)
+    
+    top(**vars(parser.parse_args()))

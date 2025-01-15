@@ -1,9 +1,96 @@
-#include "vmlinux.h"
+#include <stdint.h>
+// #include "vmlinux.h"
+
+
+#define __VMLINUX_H__
+
+
+#define __u64 uint64_t
+#define __u32 uint32_t
+#define __u16 uint16_t
+#define __s64 int64_t
+#define __s32 int32_t
+#define __be16 __u16 
+#define __be32 __u32
+#define __wsum __u32
+#define BPF_MAP_TYPE_RINGBUF 27
+
+struct pt_regs_x86_64 {
+        unsigned long r15;
+        unsigned long r14;
+        unsigned long r13;
+        unsigned long r12;
+        unsigned long bp;
+        unsigned long bx;
+        unsigned long r11;
+        unsigned long r10;
+        unsigned long r9;
+        unsigned long r8;
+        unsigned long ax;
+        unsigned long cx;
+        unsigned long dx;
+        unsigned long si;
+        unsigned long di;
+        unsigned long orig_ax;
+        unsigned long ip;
+        unsigned long cs;
+        unsigned long flags;
+        unsigned long sp;
+        unsigned long ss;
+};
+
+struct pt_regs_riscv64 {
+	long unsigned int epc;
+	long unsigned int ra;
+	long unsigned int sp;
+	long unsigned int gp;
+	long unsigned int tp;
+	long unsigned int t0;
+	long unsigned int t1;
+	long unsigned int t2;
+	long unsigned int s0;
+	long unsigned int s1;
+	long unsigned int a0;
+	long unsigned int a1;
+	long unsigned int a2;
+	long unsigned int a3;
+	long unsigned int a4;
+	long unsigned int a5;
+	long unsigned int a6;
+	long unsigned int a7;
+	long unsigned int s2;
+	long unsigned int s3;
+	long unsigned int s4;
+	long unsigned int s5;
+	long unsigned int s6;
+	long unsigned int s7;
+	long unsigned int s8;
+	long unsigned int s9;
+	long unsigned int s10;
+	long unsigned int s11;
+	long unsigned int t3;
+	long unsigned int t4;
+	long unsigned int t5;
+	long unsigned int t6;
+	long unsigned int status;
+	long unsigned int badaddr;
+	long unsigned int cause;
+	long unsigned int orig_a0;
+};
+
+
+
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
 
 SEC(".data.symbol_name") static char symbol_name[64] = "MOCK_SYMBOL";
 SEC(".data.library_path") static char library_path[128] = "MOCK_LIBRARY";
+
+
+// NOTE: setting all arch to 0 here and setting only one at 1 at load time would be easier,
+// but we need to prevent dead code elimination by clang now.
+SEC(".data.arch_is_x86_64") static const uint32_t arch_is_x86_64 = 1;
+SEC(".data.arch_is_riscv64") static const uint32_t arch_is_riscv64 = 1;
 
 char LICENSE[] SEC("license") = "Dual BSD/GPL";
 
@@ -34,61 +121,38 @@ struct {
 // 	};
 // };
 
-#include <bpf/bpf_core_read.h>
 
+// // that function exists only due to "funny" bpf_snprintf constraints.
+// static void _build_id_byteswap_for_snprintf(void* _ptr, int size) {
+// 	char* ptr = (char*) _ptr;
+// 	char temp;
+// 	for(int i = 0 ; i < size / 2; i++) {
+// 		temp = ptr[i];
+// 		ptr[i] = ptr[size - 1 - i];
+// 		ptr[size - 1 - i] = temp;
+// 	}
+// }
 
-// that function exists only due to "funny" bpf_snprintf constraints.
-static void _build_id_byteswap_for_snprintf(void* _ptr, int size) {
-	char* ptr = (char*) _ptr;
-	char temp;
-	for(int i = 0 ; i < size / 2; i++) {
-		temp = ptr[i];
-		ptr[i] = ptr[size - 1 - i];
-		ptr[size - 1 - i] = temp;
-	}
-}
-
-static void build_id_byteswap_for_snprintf(void* _ptr) {
-	_build_id_byteswap_for_snprintf(_ptr, 8);
-	_build_id_byteswap_for_snprintf(_ptr+8, 8);
-	_build_id_byteswap_for_snprintf(_ptr+16, 4);
-}
+// static void build_id_byteswap_for_snprintf(void* _ptr) {
+// 	_build_id_byteswap_for_snprintf(_ptr, 8);
+// 	_build_id_byteswap_for_snprintf(_ptr+8, 8);
+// 	_build_id_byteswap_for_snprintf(_ptr+16, 4);
+// }
 
 struct event {
-	
-	// those below form userspace dict key
 	char library_path[128];
 	char symbol_name[64];
 	int32_t pid;
 	int32_t tid;
 
-	unsigned long pc;
-	unsigned long ret_addr;
-	unsigned long ret_val;
-
-	unsigned long arg1;
-	unsigned long arg2;
-	unsigned long arg3;
-	unsigned long arg4;
-	unsigned long arg5;
-	unsigned long arg6;
-	
 	uint64_t timestamp;
 	int32_t is_ret;
-};
-// library_path, symbol_name, pid, pc, arg1, arg2, arg3, arg4, arg5, arg6);
 
-static inline void copy_regs(struct pt_regs* regs, struct event* e) {
-	e->pc = PT_REGS_IP(regs);
-	e->arg1 = PT_REGS_PARM1(regs);
-	e->arg2 = PT_REGS_PARM2(regs);
-	e->arg3 = PT_REGS_PARM3(regs);
-	e->arg4 = PT_REGS_PARM4(regs);
-	e->arg5 = PT_REGS_PARM5(regs);
-	e->arg6 = PT_REGS_PARM6(regs);
-	e->ret_addr = PT_REGS_RET(regs);
-	e->ret_val = PT_REGS_RC(regs);
-}
+	union {
+		struct pt_regs_x86_64  regs_x86_64;
+		struct pt_regs_riscv64 regs_riscv64;
+	};
+};
 
 static inline void copy_pid_tid(struct pt_regs* regs, struct event* e) {
 	uint64_t pid_tid = bpf_get_current_pid_tgid();
@@ -98,11 +162,24 @@ static inline void copy_pid_tid(struct pt_regs* regs, struct event* e) {
 	e->tid = tid;
 }
 
+static inline void copy_regs(struct pt_regs* regs, struct event* e) {
+	if (arch_is_x86_64) {
+		struct pt_regs_x86_64* alias = (struct pt_regs_x86_64*) regs;
+		e->regs_x86_64 = *alias;
+	}
+	else if (arch_is_riscv64) {
+		struct pt_regs_riscv64* alias = (struct pt_regs_riscv64*) regs;
+		e->regs_riscv64 = *alias;
+	} else {
+		bpf_printk("BAD: no arch specified!");
+	}
+}
+
 SEC("uprobe//")
 int BPF_KPROBE(uprobe_funcname)
 {
 	bpf_printk("is_ret=0");
-	
+
 	
 	struct event *e = bpf_ringbuf_reserve(&rb, sizeof(*e), 0);
 	if (!e)
@@ -180,4 +257,6 @@ int BPF_KRETPROBE(ret_uprobe_funcname) // , struct pt_regs* regs /* , unsigned l
 	copy_regs(ctx, e);
 
 	bpf_ringbuf_submit(e, 0);
+
+	return 0;
 }

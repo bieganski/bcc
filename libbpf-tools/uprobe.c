@@ -119,7 +119,7 @@ int handle_event(void *ctx, void *data, size_t data_sz)
 	if (!e->is_ret) {
 		printf("entry with args (%lx, %lx, %lx, %lx, %lx, %lx)\n", e->arg1, e->arg2, e->arg3, e->arg4, e->arg5, e->arg6);
 	} else {
-		printf("exit to ra=0x%lx, ret_val=0x%llx\n", e->ret_addr, e->ret_val);
+		printf("exit to ra=0x%lx, ret_val=0x%lx\n", e->ret_addr, e->ret_val);
 	}
 
 	return 0;
@@ -170,7 +170,7 @@ int main(int argc, char **argv)
 	}
 
 	uprobe_opts.retprobe = false;
-	int all_pid = -1, self_pid = 0;
+	int all_pid = -1, __attribute__((unused)) self_pid = 0;
 	int arg_pid = all_pid;
 
 	// NOTE: map names are inherited from BPF ELF file.
