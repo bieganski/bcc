@@ -275,48 +275,81 @@ class Event(ctypes.Structure):
 
 
 # key: (library, symbol, pid, tid)
-last_entry_event : dict[tuple[str, str, pid_t, pid_t], Event] = dict()
+last_entry_event_dict : dict[tuple[str, str, pid_t, pid_t], Event] = dict()
 
 def fmt_ns(timedelta_ns: int) -> str:
-    from datetime import timedelta
-    delta_fmt = timedelta(microseconds=timedelta_ns / 1000)
-    return repr(delta_fmt).removeprefix("datetime.timedelta")
+    return f"{(timedelta_ns / 1_000_000_000):.7f} seconds"
+
+def fmt_regs(reg_names: list[str], pt_regs: ctypes.Structure) -> str:
+    res = ""
+    for i, name in enumerate(reg_names):
+        res += f"{name}={hex(getattr(pt_regs, name))}"
+        if not (last := i == len(reg_names) - 1):
+            res += ", "
+    return res
+
+def get_regs_of_interest(arch: CPU_Arch, is_ret: bool) -> list[str]:
+    if arch == CPU_Arch.x86_64:
+        return ["ax"] if is_ret else ["di", "si", "dx", "cx", "r8", "r9", "r10"]
+    elif arch == CPU_Arch.riscv64:
+        return ["a0"] if is_ret else [f"a{i}" for i in range(6)]
+    else:
+        assert False
+
+
 
 @ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.POINTER(None), ctypes.c_size_t)
 def handle_event(ctx, data, data_sz):
+    """
+    IMPORTANT NOTE:
+
+    waiting sufficiently long time, the content of 'data' will change, as kernel will keep reusing same userspace pointer for new incoming events.
+
+    in order to (only) minimize the risk of data incoherency, first thing that we do in the handler is to memcpy @data content.
+    """
+
     assert data_sz == ctypes.sizeof(Event)
+
     event_ptr = ctypes.cast(data, ctypes.POINTER(Event))
-    event : Event = event_ptr.contents
+    event = Event()
+    ctypes.memmove(ctypes.byref(event), ctypes.byref(event_ptr.contents), data_sz)
+    # alternative thing, that causes data incoherency mentioned above: "event : Event = event_ptr.contents"
     
     hash = (event.library_path, event.symbol_name, event.pid, event.tid)
 
+    arch = system_get_cpu_arch()
+
+    pt_regs = getattr(event.pt_regs_union, system_get_cpu_arch().value)
+
+    lib_basename = event.library_path.decode("ascii").split("/")[-1]
+    msg_prefix = f"[{event.pid}, {event.tid}][{lib_basename}:{event.symbol_name}]"
+
     if event.is_ret:
-        prev_entry = last_entry_event.get(hash)
-        if not prev_entry:
+        
+        if not (prev_entry_event := last_entry_event_dict.get(hash)):
             assert False # uretprobe is set on uprobe hit from the same process, see 'handler_chain' in kernel/events/uprobes.c
 
-        exec_time_ns = event.timestamp - prev_entry.timestamp
+        exec_time_ns = event.timestamp - prev_entry_event.timestamp
         assert exec_time_ns > 0
 
-        # NOTE: possible race condition to stdout, as we don't verify whether the last
-        # line printed comes from the same 'hash' as current 'event'. in practice rarely should happen.
-        print(f" = {'TODO RET VAL'}. exec time ns: {fmt_ns(exec_time_ns)}")
+        print(f"{msg_prefix} RET ({fmt_regs(reg_names=get_regs_of_interest(arch=arch, is_ret=True), pt_regs=pt_regs)}) exec_time_ns: {fmt_ns(exec_time_ns)}")
     else:
-        # 'event' is an entry event
-        prev_entry = last_entry_event.get(hash)
-        last_entry_event[hash] = event
 
-        if not prev_entry:
-            msg_prefix = f"first entry {event.symbol_name}"
+        # fetch previous event and update with the new one
+        prev_entry_event = last_entry_event_dict.get(hash)
+        last_entry_event_dict[hash] = event
+
+        first_hit_of_hash = (not prev_entry_event)
+
+        regs_str = fmt_regs(reg_names=get_regs_of_interest(arch=arch, is_ret=False), pt_regs=pt_regs)
+
+        if not first_hit_of_hash:
+            reentry_delta_ns = event.timestamp - prev_entry_event.timestamp
+            msg_infix = f"REENTRY after {reentry_delta_ns} ns"
         else:
-            reentry_delta_ns = event.timestamp - prev_entry.timestamp
-            msg_prefix = f"reentry {event.symbol_name} after {fmt_ns(reentry_delta_ns)}"
-        
+            msg_infix = f"FIRST ENTRY"
 
-        pt_regs = getattr(event.pt_regs_union, system_get_cpu_arch().value)
-        print(f"\n{[(reg_name, hex(getattr(pt_regs, reg_name))) for reg_name, _ in pt_regs._fields_]}")
-        # print(f"\n{msg_prefix} (pid={event.pid}), args: (0x{event.arg1:x}, 0x{event.arg2:x}, 0x{event.arg3:x}, "
-        #       f"0x{event.arg4:x}, 0x{event.arg5:x}, 0x{event.arg6:x})", end="")
+        print(f"\n{msg_prefix} {msg_infix} {regs_str}")
     return 0
 
 def get_section_assert_exists(elffile: ELFFile, name: str) -> Section:
